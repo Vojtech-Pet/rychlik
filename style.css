@@ -1,0 +1,114 @@
+window {
+  background: #f3f5f9;
+  color: #172033;
+}
+
+.main-header {
+  min-height: 58px;
+  background: #ffffff;
+  border-bottom: 1px solid #dfe4ec;
+  box-shadow: 0 2px 8px alpha(#172033, 0.06);
+}
+
+.main-header entry {
+  min-height: 38px;
+  border-radius: 20px;
+  background: #eef1f6;
+  border: 0;
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+.add-button {
+  min-height: 38px;
+  border-radius: 9px;
+  padding-left: 18px;
+  padding-right: 18px;
+  background: #3478f6;
+  color: white;
+  font-weight: 700;
+  border: 0;
+}
+
+.sidebar {
+  background: #26344d;
+  color: #eef4ff;
+  padding: 8px;
+}
+
+.brand {
+  color: #ffffff;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  padding: 8px 10px;
+}
+
+.sidebar-button {
+  min-height: 40px;
+  border-radius: 8px;
+  border: 0;
+  background: transparent;
+  color: #dbe6f7;
+  font-weight: 600;
+  padding-left: 12px;
+}
+
+.sidebar-button:hover,
+.sidebar-button:focus {
+  background: #344766;
+  color: #ffffff;
+}
+
+.content-area {
+  background: #f3f5f9;
+}
+
+.page-title {
+  color: #172033;
+  font-size: 26px;
+  font-weight: 800;
+}
+
+.boxed-list {
+  background: transparent;
+}
+
+.download-card {
+  margin-bottom: 10px;
+  border-radius: 12px;
+  border: 1px solid #e0e5ed;
+  background: #ffffff;
+  box-shadow: 0 3px 12px alpha(#172033, 0.07);
+}
+
+.download-card:hover {
+  border-color: #b9c8df;
+}
+
+.download-card progressbar trough {
+  min-height: 6px;
+  border-radius: 4px;
+  background: #e7ebf2;
+}
+
+.download-card progressbar progress {
+  min-height: 6px;
+  border-radius: 4px;
+  background: #3478f6;
+}
+
+.icon-action {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  background: #eef2f8;
+  color: #35435b;
+  border: 0;
+}
+
+.icon-action:hover {
+  background: #dce7fb;
+  color: #2466d1;
+}

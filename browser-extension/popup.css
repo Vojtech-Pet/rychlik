@@ -1,0 +1,82 @@
+body {
+  width: 280px;
+  margin: 0;
+  padding: 12px;
+  background: #f4f6fa;
+  color: #172033;
+  font: 14px system-ui, sans-serif;
+}
+
+.title-row {
+  margin-bottom: 12px;
+}
+
+.title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+button {
+  width: 100%;
+  border: 1px solid #c8d1df;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1e293b;
+  padding: 9px 10px;
+  font: 600 14px system-ui, sans-serif;
+  cursor: pointer;
+  text-align: left;
+}
+
+button:hover {
+  background: #edf3ff;
+  border-color: #9db9ea;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+  color: #46566f;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  cursor: pointer;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.shortcut-display {
+  flex: 1;
+  border: 1px solid #c8d1df;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 6px 8px;
+  font: 600 12.5px system-ui, sans-serif;
+  color: #172033;
+  text-align: center;
+}
+
+.shortcut-display.recording {
+  border-color: #3478f6;
+  color: #245fbd;
+  background: #e4edfc;
+}
+
+.shortcut-row button {
+  width: auto;
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+
+.shortcut-row button.reset {
+  color: #586271;
+}

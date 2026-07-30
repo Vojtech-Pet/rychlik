@@ -1,0 +1,11 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+.cache/
+build/
+dist/
+*.egg-info
+
+# Cookies / session data -- never commit these
+*.cookiestxt
+*cookies*.txt
