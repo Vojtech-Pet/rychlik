@@ -1,5 +1,7 @@
 # Rýchlik
 
+![Rýchlik screenshot](docs/screenshot.png)
+
 Jednoduchý správca sťahovania pre Linux postavený na GTK 4.
 
 ## Funkcie
