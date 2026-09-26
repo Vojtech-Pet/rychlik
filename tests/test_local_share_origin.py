@@ -9,6 +9,7 @@ from rychlik.share.contracts import ShareStatus
 from rychlik.share.local_share_origin import LocalShareOrigin
 from rychlik.share.share_link import ShareLink, generate_share_id
 from rychlik.share.share_link_repository import InMemoryShareLinkRepository
+from rychlik.share.share_preview_service import SharePreviewService
 
 KNOWN_BYTES = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"  # 36 bytes
 UTC_NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -34,9 +35,13 @@ class Fixture:
         )
         self.share_link_repository.save(self.link)
 
+        self.share_preview_service = SharePreviewService(
+            artifact_repository=self.artifact_repository, cache_dir=tmp_path / "preview-cache"
+        )
         self.origin = LocalShareOrigin(
             share_link_repository=self.share_link_repository,
             artifact_repository=self.artifact_repository,
+            share_preview_service=self.share_preview_service,
         )
         self.origin.start()
 
@@ -330,8 +335,13 @@ def test_real_end_to_end_head_and_range_get(tmp_path):
         share_id = link_service.create_link(LinkShareRequest(artifact=artifact)).share_id
         link_service.activate(share_id)
 
+        preview_service = SharePreviewService(
+            artifact_repository=artifact_repository, cache_dir=tmp_path / "preview-cache"
+        )
         origin = LocalShareOrigin(
-            share_link_repository=share_link_repository, artifact_repository=artifact_repository
+            share_link_repository=share_link_repository,
+            artifact_repository=artifact_repository,
+            share_preview_service=preview_service,
         )
         origin.start()
         try:
