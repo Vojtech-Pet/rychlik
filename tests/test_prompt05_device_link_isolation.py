@@ -33,6 +33,9 @@ def test_link_mode_remains_usable_when_device_mode_disabled(tmp_path):
     artifact = _artifact(tmp_path)
 
     result = service.share_by_link(LinkShareRequest(artifact=artifact))
+    # Prompt 06 state machine: CREATING has no direct path to REVOKED, only
+    # ACTIVE/FAILED. Activate first to exercise a realistic lifecycle.
+    service._link_service.activate(result.share_id)
     revoke_result = service._link_service.revoke_link(result.share_id)
 
     assert result.status == ShareStatus.CREATING

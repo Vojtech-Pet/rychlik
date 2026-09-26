@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
 )
 
 from rychlik.core.artifact import Artifact
+from rychlik.share.contracts import LinkShareRequest, ShareStatus
+from rychlik.share.share_link_service import ShareLinkService
 
 
 class ShareDialog(QDialog):
@@ -19,10 +21,17 @@ class ShareDialog(QDialog):
     No AUTO mode. Only a completed, valid Artifact may be shared.
     """
 
-    def __init__(self, artifact: Artifact | None, parent=None) -> None:
+    def __init__(
+        self,
+        artifact: Artifact | None,
+        parent=None,
+        *,
+        share_link_service: ShareLinkService | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Share")
         self.artifact = artifact
+        self._share_link_service = share_link_service or ShareLinkService()
 
         layout = QVBoxLayout(self)
 
@@ -43,7 +52,19 @@ class ShareDialog(QDialog):
         self.cancel_button.clicked.connect(self.reject)
         layout.addWidget(self.cancel_button)
 
+        self.link_button.clicked.connect(self._on_share_by_link_clicked)
+
         self._refresh_state()
+
+    def _on_share_by_link_clicked(self) -> None:
+        # Functional placeholder only: no URL, no QR, no transport (Prompt 06 scope).
+        if self.artifact is None:
+            return
+        result = self._share_link_service.create_link(LinkShareRequest(artifact=self.artifact))
+        if result.status == ShareStatus.FAILED:
+            self.status_label.setText(f"Share link failed: {result.error}")
+        else:
+            self.status_label.setText(f"Share link created\nStatus: {result.status.name}")
 
     def _refresh_state(self) -> None:
         if self.artifact is None:

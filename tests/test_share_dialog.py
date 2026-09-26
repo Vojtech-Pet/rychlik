@@ -39,3 +39,12 @@ def test_cancel_rejects_dialog(qapp, tmp_path):
     dialog.cancel_button.click()
 
     assert dialog.result() == QDialog.Rejected
+
+
+def test_share_by_link_click_shows_creating_status_placeholder(qapp, tmp_path):
+    dialog = ShareDialog(_artifact(tmp_path))
+
+    dialog.link_button.click()
+
+    assert "Share link created" in dialog.status_label.text()
+    assert "CREATING" in dialog.status_label.text()
