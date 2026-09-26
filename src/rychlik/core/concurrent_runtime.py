@@ -60,10 +60,11 @@ from rychlik.core.dispatch_coordinator import (
 from rychlik.core.download_queue import DownloadQueue, QueueEntryState, UnknownQueueEntryError
 from rychlik.core.download_task import DownloadTask, DownloadTaskState
 from rychlik.core.download_view import DownloadManagerSnapshot, build_manager_snapshot
+from rychlik.core.partial_transfer import PartialTransferState
 from rychlik.core.progress import ProgressRegistry
 from rychlik.core.restart_recovery import RetrySeed
 from rychlik.core.retry_policy import RetryPolicy
-from rychlik.core.scheduler_policy import DispatchCandidate, SchedulerConfig, SchedulerPolicy
+from rychlik.core.scheduler_policy import DispatchCandidate, DispatchKind, SchedulerConfig, SchedulerPolicy
 from rychlik.core.state_store import PersistedRetrySchedule, SqliteDownloadStateStore
 
 
@@ -73,6 +74,15 @@ class ConcurrentRuntimeError(Exception):
 
 class RuntimeAlreadyRunningError(ConcurrentRuntimeError):
     """Raised by start() when the runtime is already running (§45)."""
+
+
+class PauseRequestOutcome(Enum):
+    """Prompt A9 (§13): request_pause() never lies about a task that has no
+    active transfer to physically pause -- READY/RETRY_WAIT/PAUSED tasks
+    return NOT_ACTIVE, never a fake REQUESTED."""
+
+    REQUESTED = "REQUESTED"
+    NOT_ACTIVE = "NOT_ACTIVE"
 
 
 def _utc_now() -> datetime:
@@ -153,6 +163,7 @@ class ConcurrentDownloadRuntime:
         progress_registry: ProgressRegistry | None = None,
         state_store: SqliteDownloadStateStore | None = None,
         initial_retry_schedule: tuple[RetrySeed, ...] = (),
+        enable_pause_resume: bool = False,
     ) -> None:
         self._queue = queue
         self._tasks = tasks
@@ -173,6 +184,11 @@ class ConcurrentDownloadRuntime:
         # None (default) = exactly A5/A6/A7 behavior: no durable persistence
         # at all (Prompt A8). See docs/PERSISTENT_DOWNLOAD_STATE.md.
         self._state_store = state_store
+        # False (default) = exactly A5/A6/A7/A8 behavior: no pause_event is
+        # ever created/passed to dispatch(), so a caller's AcquisitionService
+        # test double declaring only the pre-A9 acquire() signature is
+        # completely unaffected (Prompt A9, see docs/SAFE_PARTIAL_RESUME.md).
+        self._enable_pause_resume = enable_pause_resume
 
         # One runtime coordination lock (§20/§21) protects all shared
         # Queue/Task reads+mutations the runtime performs, and is handed to
@@ -183,6 +199,11 @@ class ConcurrentDownloadRuntime:
         self._stop_event = threading.Event()
 
         self._in_flight: dict[str, _InFlight] = {}
+        # Prompt A9 runtime-only state (§10/§12/§16/§17): never persisted --
+        # a pending resume request or an unfired pause signal is safely lost
+        # on restart; the task simply stays PAUSED and can be resumed again.
+        self._pause_events: dict[str, threading.Event] = {}
+        self._resume_requested: set[str] = set()
 
         self._completions: list[WorkerCompletion] = []
         self._completions_lock = threading.Lock()
@@ -264,6 +285,35 @@ class ConcurrentDownloadRuntime:
         a freshly-READY task, etc. Cheap, thread-safe, no domain coupling."""
         self._wake_event.set()
 
+    # --- pause / resume (Prompt A9) -----------------------------------------
+
+    def request_pause(self, queue_entry_id: str) -> PauseRequestOutcome:
+        """Cooperative, never instantaneous (§102): sets the in-flight
+        transfer's pause_event; the worker notices between chunks and stops
+        cleanly on its own. Idempotent (§14) -- setting an already-set
+        Event is a no-op. Valid only for the exact currently-active
+        occurrence (§12); a READY/RETRY_WAIT/already-PAUSED/unknown
+        queue_entry_id returns NOT_ACTIVE rather than silently doing
+        nothing indistinguishably from success."""
+        with self._state_lock:
+            event = self._pause_events.get(queue_entry_id)
+            if event is None:
+                return PauseRequestOutcome.NOT_ACTIVE
+            event.set()
+            return PauseRequestOutcome.REQUESTED
+
+    def request_resume(self, queue_entry_id: str) -> None:
+        """Records runtime-only intent (§16/§17): this PAUSED occurrence may
+        now compete for a transfer slot through normal A3/A5 scheduling --
+        it does NOT itself start a transfer, bypass queue pause, priority,
+        or capacity. Idempotent (§76): requesting twice before it is
+        consumed is exactly one pending intent. Consumed (removed) the
+        moment SchedulerPolicy actually selects it as a RESUME candidate
+        (§77)."""
+        with self._state_lock:
+            self._resume_requested.add(queue_entry_id)
+        self.notify_state_changed()
+
     # --- completion observation (§39/§40) ----------------------------------
 
     def drain_completions(self) -> list[WorkerCompletion]:
@@ -334,6 +384,37 @@ class ConcurrentDownloadRuntime:
             queue_entry = None
         self._state_store.checkpoint_task_state(task=task, request=request, queue_entry=queue_entry)
 
+    def _load_partial(self, queue_entry_id: str) -> "PartialTransferState | None":
+        """Prompt A9: called once per dispatch attempt, never per network
+        chunk. Local re-validation (path ownership, durable_bytes vs. actual
+        size, prefix SHA-256) happens inside DispatchCoordinator via
+        plan_resume(), not here -- this only fetches the raw persisted row."""
+        if self._state_store is None:
+            return None
+        return self._state_store.load_partial_transfer(queue_entry_id)
+
+    def _save_partial(self, candidate: DispatchCandidate, partial: "PartialTransferState") -> None:
+        """Called from the worker thread by the acquisition backend itself
+        (pause checkpoint or periodic resume checkpoint) -- deliberately
+        WITHOUT self._state_lock (§112/§113): a local prefix hash/fsync must
+        never block the scheduler/other workers. Reads the current task
+        without the lock, matching how A7 progress callbacks already read
+        shared state unlocked on this same hot path."""
+        if self._state_store is None:
+            return
+        task = self._tasks.get(candidate.task_id)
+        if task is None:
+            return
+        self._state_store.checkpoint_task_state(task=task, partial_transfer=partial)
+
+    def _clear_partial(self, candidate: DispatchCandidate, queue_entry_id: str) -> None:
+        if self._state_store is None:
+            return
+        task = self._tasks.get(candidate.task_id)
+        if task is None:
+            return
+        self._state_store.checkpoint_task_state(task=task, delete_partial_transfer_id=queue_entry_id)
+
     # --- presentation snapshots (Prompt A7) ---------------------------------
 
     def manager_snapshot(self, *, include_removed: tuple[str, ...] = ()) -> DownloadManagerSnapshot:
@@ -394,6 +475,7 @@ class ConcurrentDownloadRuntime:
             tasks=self._tasks,
             config=self._config,
             reserved_queue_entry_ids=reserved_ids,
+            resume_requested_queue_entry_ids=frozenset(self._resume_requested),
         )
         for candidate in plan.selected:
             self._reserve_and_submit_locked(candidate)
@@ -538,6 +620,13 @@ class ConcurrentDownloadRuntime:
             raise AssertionError(
                 f"duplicate reservation for queue_entry_id {candidate.queue_entry_id!r}"
             )
+        if candidate.kind == DispatchKind.RESUME:
+            # §77: consume the pending intent the moment it is actually
+            # reserved -- reservation itself already prevents a duplicate
+            # submission for the same occurrence.
+            self._resume_requested.discard(candidate.queue_entry_id)
+        if self._enable_pause_resume:
+            self._pause_events[candidate.queue_entry_id] = threading.Event()
         future = self._executor.submit(self._run_worker, candidate)
         self._in_flight[candidate.queue_entry_id] = _InFlight(
             task_id=candidate.task_id, candidate=candidate, future=future
@@ -551,6 +640,7 @@ class ConcurrentDownloadRuntime:
         (§11), regardless of outcome."""
         result: DispatchExecutionResult | None = None
         error: str | None = None
+        pause_event = self._pause_events.get(candidate.queue_entry_id)
         try:
             result = self._coordinator.dispatch(
                 candidate,
@@ -565,6 +655,18 @@ class ConcurrentDownloadRuntime:
                     if self._state_store is not None
                     else None
                 ),
+                pause_event=pause_event,
+                load_partial=(self._load_partial if self._state_store is not None else None),
+                save_partial=(
+                    (lambda partial: self._save_partial(candidate, partial))
+                    if self._state_store is not None
+                    else None
+                ),
+                clear_partial=(
+                    (lambda qeid: self._clear_partial(candidate, qeid))
+                    if self._state_store is not None
+                    else None
+                ),
             )
             if result.outcome == DispatchOutcome.RETRY_WAIT:
                 with self._state_lock:
@@ -576,6 +678,7 @@ class ConcurrentDownloadRuntime:
         finally:
             with self._state_lock:
                 self._in_flight.pop(candidate.queue_entry_id, None)
+                self._pause_events.pop(candidate.queue_entry_id, None)
             with self._completions_lock:
                 self._completions.append(
                     WorkerCompletion(

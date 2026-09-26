@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from rychlik.core.partial_transfer import PartialTransferState
 
 
 class AcquisitionError(Exception):
@@ -16,6 +20,15 @@ class AcquisitionError(Exception):
 
 class DownloadCancelled(AcquisitionError):
     """Raised when a download is cancelled before completion."""
+
+
+class DownloadPaused(AcquisitionError):
+    """Raised when a download stops because of a cooperative pause request
+    (Prompt A9) -- deliberately distinct from DownloadCancelled: a pause is
+    NONTERMINAL (the task becomes PAUSED, resumable later), a cancellation
+    is terminal. Only raised once the transfer loop has actually stopped
+    and any forced durable checkpoint has been attempted -- never as an
+    immediate reaction to the pause request alone (§7)."""
 
 
 @dataclass(frozen=True)
@@ -38,3 +51,25 @@ class CompletedDownload:
     source_url: str
     mime_type: str | None = None
     size: int | None = None
+
+
+@dataclass(frozen=True)
+class ResumeRequest:
+    """Prompt A9: bridges DispatchCoordinator's durable partial-transfer
+    checkpointing to the acquisition backend, without the backend ever
+    importing sqlite3/state_store directly (mirrors the A8 `checkpoint`
+    callback pattern). `initial_partial` has ALREADY been locally validated
+    (path ownership, size, prefix SHA-256) by the caller via
+    `rychlik.core.partial_transfer.plan_resume()` before this is
+    constructed -- DirectHttpAcquisition only performs the REMOTE half of
+    validation (If-Range / 206 / Content-Range) using it. `initial_partial
+    =None` means "no resumable prefix, but still checkpoint this transfer
+    for a possible future pause/resume/retry/crash"."""
+
+    queue_entry_id: str
+    task_id: str
+    attempt_count: int
+    initial_partial: "PartialTransferState | None"
+    save_partial: Callable[["PartialTransferState"], None]
+    clear_partial: Callable[[], None]
+    checkpoint_bytes_threshold: int = 8 * 1024 * 1024

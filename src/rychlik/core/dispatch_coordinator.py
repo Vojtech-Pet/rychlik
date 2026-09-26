@@ -45,12 +45,15 @@ from rychlik.acquisition.contracts import (
     AcquisitionError,
     CompletedDownload,
     DownloadCancelled,
+    DownloadPaused,
     DownloadRequest,
+    ResumeRequest,
 )
 from rychlik.core.download_queue import DownloadQueue, QueueEntryState, UnknownQueueEntryError
 from rychlik.core.download_task import DownloadTask, DownloadTaskFailure, DownloadTaskState
+from rychlik.core.partial_transfer import PartialTransferState, ResumeDecisionKind, plan_resume
 from rychlik.core.progress import ProgressRegistry
-from rychlik.core.scheduler_policy import DispatchCandidate
+from rychlik.core.scheduler_policy import DispatchCandidate, DispatchKind
 
 
 class DispatchCoordinatorError(Exception):
@@ -90,6 +93,7 @@ class DispatchOutcome(Enum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     STALE = "STALE"
+    PAUSED = "PAUSED"
 
 
 @dataclass(frozen=True)
@@ -122,9 +126,16 @@ class DispatchCoordinator:
         *,
         acquisition_service: AcquisitionService,
         failure_mapper: FailureMapper = default_failure_mapper,
+        resume_checkpoint_bytes_threshold: int = 8 * 1024 * 1024,
     ) -> None:
         self._acquisition_service = acquisition_service
         self._failure_mapper = failure_mapper
+        # Prompt A9 (§47): how often a durable partial-transfer checkpoint is
+        # written during an active resume-tracked transfer. Default matches
+        # ResumeRequest's own default; exposed here so tests/callers can
+        # exercise checkpointing deterministically without waiting for 8MiB
+        # of real network traffic.
+        self._resume_checkpoint_bytes_threshold = resume_checkpoint_bytes_threshold
 
     def dispatch(
         self,
@@ -139,6 +150,10 @@ class DispatchCoordinator:
         lock: ContextManager | None = None,
         progress_registry: ProgressRegistry | None = None,
         checkpoint: Callable[[], None] | None = None,
+        pause_event=None,
+        load_partial: Callable[[str], "PartialTransferState | None"] | None = None,
+        save_partial: Callable[[PartialTransferState], None] | None = None,
+        clear_partial: Callable[[str], None] | None = None,
     ) -> DispatchExecutionResult:
         """`lock` is a Prompt A5 concurrency extension (§23/§24): an
         optional context manager (e.g. a shared `threading.RLock`) guarding
@@ -168,7 +183,28 @@ class DispatchCoordinator:
         backward compatible -- no persistence, identical to every prior
         phase. If `checkpoint()` raises during the PRE-NETWORK call, the
         network transfer is never started (§81) -- the exception propagates
-        as `DispatchCheckpointError` instead."""
+        as `DispatchCheckpointError` instead.
+
+        Prompt A9 extensions, all additive and independently optional:
+        `candidate.kind` (default DispatchKind.START) selects
+        start_transfer() (requires Task READY) vs. resume_transfer()
+        (requires Task PAUSED). `pause_event` is forwarded straight to
+        AcquisitionService/DirectHttpAcquisition (a stdlib
+        threading.Event, cooperative -- never thread suspension).
+        `load_partial`/`save_partial`/`clear_partial` (all None by default
+        = no resume tracking at all) bridge to durable partial-transfer
+        state exactly like `checkpoint` bridges to durable task state:
+        `load_partial(queue_entry_id)` fetches any persisted
+        PartialTransferState, which is then locally re-validated here via
+        `rychlik.core.partial_transfer.plan_resume()` (path ownership,
+        durable_bytes vs. actual file size, prefix SHA-256) BEFORE it is
+        ever handed to the acquisition backend -- a `.part` file's mere
+        existence is never sufficient (see docs/SAFE_PARTIAL_RESUME.md). A
+        `DownloadPaused` result produces DispatchOutcome.PAUSED: the
+        QueueEntry stays QUEUED (nothing is removed), and the durable
+        partial checkpoint the acquisition backend wrote immediately
+        before raising DownloadPaused is what makes the pause safely
+        resumable later."""
 
         def _locked() -> ContextManager:
             return lock if lock is not None else contextlib.nullcontext()
@@ -189,10 +225,37 @@ class DispatchCoordinator:
             return prepared  # STALE, decided entirely under the lock
         task, request = prepared
 
+        resume_request = None
+        initial_bytes = 0
+        if load_partial is not None or save_partial is not None:
+            persisted_partial = load_partial(candidate.queue_entry_id) if load_partial is not None else None
+            decision = plan_resume(
+                persisted_partial, expected_dir=request.destination_dir, task_attempt_count=task.attempt_count
+            )
+            initial_partial = (
+                persisted_partial if decision.kind == ResumeDecisionKind.ATTEMPT_RANGE else None
+            )
+            if initial_partial is not None:
+                initial_bytes = initial_partial.durable_bytes
+            if save_partial is not None:
+                resume_request = ResumeRequest(
+                    queue_entry_id=candidate.queue_entry_id,
+                    task_id=candidate.task_id,
+                    attempt_count=task.attempt_count,
+                    initial_partial=initial_partial,
+                    save_partial=save_partial,
+                    clear_partial=(
+                        (lambda: clear_partial(candidate.queue_entry_id))
+                        if clear_partial is not None
+                        else (lambda: None)
+                    ),
+                    checkpoint_bytes_threshold=self._resume_checkpoint_bytes_threshold,
+                )
+
         effective_callback = progress_callback
         if progress_registry is not None:
             reporter = progress_registry.begin_attempt(
-                candidate.task_id, candidate.queue_entry_id, task.attempt_count
+                candidate.task_id, candidate.queue_entry_id, task.attempt_count, initial_bytes=initial_bytes
             )
             if progress_callback is not None:
                 user_callback = progress_callback
@@ -203,9 +266,21 @@ class DispatchCoordinator:
             else:
                 effective_callback = reporter
 
+        acquire_kwargs = {"progress_callback": effective_callback, "cancel_event": cancel_event}
+        if pause_event is not None:
+            acquire_kwargs["pause_event"] = pause_event
+        if resume_request is not None:
+            acquire_kwargs["resume"] = resume_request
+
         try:
-            completed = self._acquisition_service.acquire(
-                request, progress_callback=effective_callback, cancel_event=cancel_event
+            completed = self._acquisition_service.acquire(request, **acquire_kwargs)
+        except DownloadPaused:
+            with _locked():
+                task = task.pause_transfer(now=now)
+                tasks[candidate.task_id] = task
+                _checkpoint()  # QueueEntry deliberately untouched -- still QUEUED (§73)
+            return DispatchExecutionResult(
+                candidate.queue_entry_id, candidate.task_id, DispatchOutcome.PAUSED
             )
         except DownloadCancelled:
             with _locked():
@@ -299,11 +374,15 @@ class DispatchCoordinator:
 
         # Last-moment revalidation (§9/§10): a DispatchPlan is a decision over
         # a past snapshot. Anything that drifted since planning is STALE, not
-        # an error -- no mutation, no acquisition call.
+        # an error -- no mutation, no acquisition call. Prompt A9: a RESUME
+        # candidate requires Task PAUSED instead of READY (§25).
         if entry.state != QueueEntryState.QUEUED:
             return self._stale(candidate, f"queue entry is {entry.state.name}, not QUEUED")
-        if task.state != DownloadTaskState.READY:
-            return self._stale(candidate, f"task is {task.state.name}, not READY")
+        required_state = (
+            DownloadTaskState.PAUSED if candidate.kind == DispatchKind.RESUME else DownloadTaskState.READY
+        )
+        if task.state != required_state:
+            return self._stale(candidate, f"task is {task.state.name}, not {required_state.name}")
 
         request = requests.get(candidate.task_id)
         if request is None:
@@ -312,13 +391,16 @@ class DispatchCoordinator:
             )
 
         try:
-            task = task.start_transfer(now=now)
+            if candidate.kind == DispatchKind.RESUME:
+                task = task.resume_transfer(now=now)  # attempt_count unchanged (§26)
+            else:
+                task = task.start_transfer(now=now)
         except Exception:
-            # Defensive only: in this synchronous coordinator the READY check
+            # Defensive only: in this synchronous coordinator the state check
             # above and this call cannot actually diverge without the lock
             # being released in between, but a future caller must not
             # partially execute (§31).
-            return self._stale(candidate, "task state changed before start_transfer")
+            return self._stale(candidate, "task state changed before transfer start")
         tasks[candidate.task_id] = task
 
         return task, request

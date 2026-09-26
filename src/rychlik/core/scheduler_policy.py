@@ -36,6 +36,7 @@ transitioning tasks and invoking the acquisition runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Mapping
 
 from rychlik.core.download_queue import DownloadQueue
@@ -69,6 +70,15 @@ class SchedulerConfig:
             raise InvalidSchedulerConfigError("max_active_transfers must not be negative")
 
 
+class DispatchKind(Enum):
+    """Prompt A9: distinguishes a normal fresh-attempt dispatch from a
+    manual resume of an already-PAUSED transfer. START is the default so
+    every pre-A9 caller/candidate is unaffected."""
+
+    START = "START"
+    RESUME = "RESUME"
+
+
 @dataclass(frozen=True)
 class DispatchCandidate:
     """Just enough identity for a later coordinator -- never a copy of the
@@ -76,6 +86,7 @@ class DispatchCandidate:
 
     queue_entry_id: str
     task_id: str
+    kind: DispatchKind = DispatchKind.START
 
 
 @dataclass(frozen=True)
@@ -98,6 +109,7 @@ class SchedulerPolicy:
         tasks: Mapping[str, DownloadTask],
         config: SchedulerConfig,
         reserved_queue_entry_ids: frozenset[str] = frozenset(),
+        resume_requested_queue_entry_ids: frozenset[str] = frozenset(),
     ) -> DispatchPlan:
         """`reserved_queue_entry_ids` is a Prompt A5 runtime-concurrency
         extension: an empty (default) set preserves all Prompt A3 behavior
@@ -109,7 +121,17 @@ class SchedulerPolicy:
         capacity so a second worker cannot be over-submitted for the same
         slot. `active_transfer_count` on the returned plan is UNCHANGED
         semantics: it always reports only TRANSFERRING tasks, never
-        reservations -- reservations only affect `available_slots_*`."""
+        reservations -- reservations only affect `available_slots_*`.
+
+        `resume_requested_queue_entry_ids` is a Prompt A9 extension: an
+        empty (default) set preserves all pre-A9 behavior exactly (only
+        START candidates from QUEUED+READY are ever produced). A
+        `QueueEntry.QUEUED` + `DownloadTask.PAUSED` occurrence whose
+        queue_entry_id is in this set becomes a RESUME candidate,
+        participating in the exact same canonical A1 order and the exact
+        same capacity/reservation accounting as any START candidate -- no
+        hidden priority, no extra slots. `QueueEntry.PAUSED` still blocks
+        selection either way (§21), since eligible_entries() is QUEUED-only."""
         self._validate_snapshot(queue, tasks)
 
         active_transfer_count = sum(
@@ -131,12 +153,24 @@ class SchedulerPolicy:
         # Ordering authority is entirely A1's: eligible_entries() is already
         # QUEUED-only, in canonical (priority, then manual/stable position)
         # order. SchedulerPolicy filters by task readiness but never re-sorts.
-        candidates = [
-            DispatchCandidate(queue_entry_id=entry.queue_entry_id, task_id=entry.task_id)
-            for entry in queue.eligible_entries()
-            if entry.queue_entry_id not in reserved_queue_entry_ids
-            and tasks[entry.task_id].state == DownloadTaskState.READY
-        ]
+        # RESUME candidates are interleaved in that same canonical order,
+        # never given hidden priority over a START candidate (§22).
+        candidates = []
+        for entry in queue.eligible_entries():
+            if entry.queue_entry_id in reserved_queue_entry_ids:
+                continue
+            task_state = tasks[entry.task_id].state
+            if task_state == DownloadTaskState.READY:
+                candidates.append(
+                    DispatchCandidate(queue_entry_id=entry.queue_entry_id, task_id=entry.task_id, kind=DispatchKind.START)
+                )
+            elif (
+                task_state == DownloadTaskState.PAUSED
+                and entry.queue_entry_id in resume_requested_queue_entry_ids
+            ):
+                candidates.append(
+                    DispatchCandidate(queue_entry_id=entry.queue_entry_id, task_id=entry.task_id, kind=DispatchKind.RESUME)
+                )
 
         selected = tuple(candidates[:available_slots])
 

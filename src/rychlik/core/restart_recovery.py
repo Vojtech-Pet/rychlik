@@ -10,12 +10,23 @@ It never calls AcquisitionService or DispatchCoordinator.dispatch()
 (§89) -- it only ever produces READY/CREATED/RETRY_WAIT/terminal tasks.
 Actual downloading begins only once normal A3/A5 scheduling starts.
 
-Conservative by design (per the user's own A8 framing): there is no safe
-partial-transfer resume yet, so any transient in-flight state
-(TRANSFERRING, task-level PAUSED, VERIFYING, POST_PROCESSING) is
-recovered to READY -- a brand new attempt, never a claimed continuation
-of a dead HTTP connection. RESOLVING has no resumable resolver contract
-either, so it recovers to CREATED.
+Conservative by design: TRANSFERRING/VERIFYING/POST_PROCESSING all recover
+to READY -- a brand new attempt, never a claimed continuation of a dead
+HTTP connection (no safe verification/post-processing checkpoint exists).
+RESOLVING has no resumable resolver contract either, so it recovers to
+CREATED.
+
+Prompt A9 changes task-level PAUSED specifically (§85/§86, superseding
+A8's original "PAUSED -> READY always" rule, kept here only as historical
+context): a persisted PAUSED task recovers to PAUSED, unchanged, IF AND
+ONLY IF its queue occurrence has a durable PartialTransferState that
+passes the exact same local validation (path ownership, durable_bytes vs.
+actual file size, prefix SHA-256) real dispatch would apply -- see
+rychlik.core.partial_transfer.plan_resume(). Recovery still never issues
+network requests (§89); it only proves the LOCAL half of resumability.
+Missing/corrupt/unowned partial state recovers PAUSED to READY instead,
+exactly like every other transient state -- continuation of the same
+paused transfer can never be proven, so it is not claimed.
 """
 
 from __future__ import annotations
@@ -26,6 +37,7 @@ from enum import Enum
 
 from rychlik.core.download_queue import QueueEntryState
 from rychlik.core.download_task import DownloadTask, DownloadTaskState
+from rychlik.core.partial_transfer import PartialTransferConsistencyError, ResumeDecisionKind, plan_resume
 from rychlik.core.retry_policy import RetryPolicy
 from rychlik.core.state_store import (
     PersistedRetrySchedule,
@@ -45,14 +57,16 @@ class RecoveryActionReason(Enum):
     RETRY_EXHAUSTED = "RETRY_EXHAUSTED"
     TERMINAL_QUEUE_RECONCILED = "TERMINAL_QUEUE_RECONCILED"
     STALE_RETRY_DISCARDED = "STALE_RETRY_DISCARDED"
+    PAUSED_PRESERVED = "PAUSED_PRESERVED"
 
 
+# PAUSED is handled separately (Prompt A9, §85/§86) -- it may survive
+# recovery unchanged instead of always normalizing to READY.
 _TRANSIENT_TO_READY = frozenset(
-    {DownloadTaskState.TRANSFERRING, DownloadTaskState.PAUSED, DownloadTaskState.VERIFYING, DownloadTaskState.POST_PROCESSING}
+    {DownloadTaskState.TRANSFERRING, DownloadTaskState.VERIFYING, DownloadTaskState.POST_PROCESSING}
 )
 _TRANSIENT_REASON = {
     DownloadTaskState.TRANSFERRING: RecoveryActionReason.INTERRUPTED_TRANSFER,
-    DownloadTaskState.PAUSED: RecoveryActionReason.INTERRUPTED_PAUSE,
     DownloadTaskState.VERIFYING: RecoveryActionReason.INTERRUPTED_VERIFICATION,
     DownloadTaskState.POST_PROCESSING: RecoveryActionReason.INTERRUPTED_POST_PROCESSING,
 }
@@ -146,6 +160,12 @@ class RestartRecovery:
                         RecoveryActionReason.INTERRUPTED_RESOLUTION,
                     )
                 )
+            elif task.state == DownloadTaskState.PAUSED:
+                self._recover_paused_task(
+                    task_id=task_id, task=task, tasks=tasks, queue_entries=queue_entries,
+                    requests=persisted.requests, partial_transfers=persisted.partial_transfers,
+                    actions=actions, now=now,
+                )
 
         for task_id, task in list(tasks.items()):
             if task.state != DownloadTaskState.RETRY_WAIT:
@@ -222,6 +242,54 @@ class RestartRecovery:
             retry_schedules=retry_schedules,
         )
         return RecoveryResult(state=recovered_state, retry_seeds=tuple(retry_seeds), report=report)
+
+    @staticmethod
+    def _recover_paused_task(
+        *,
+        task_id: str,
+        task: DownloadTask,
+        tasks: dict,
+        queue_entries: dict,
+        requests: dict,
+        partial_transfers: dict,
+        actions: list,
+        now: datetime,
+    ) -> None:
+        """Prompt A9 (§85/§86): PAUSED survives recovery ONLY with a
+        durable partial that passes the exact same local validation real
+        dispatch would apply. Never issues a network request (§89) -- this
+        is local-only proof. Any failure to prove it (missing/corrupt
+        partial, unowned path, missing request) recovers to READY instead,
+        exactly like every other transient state."""
+        qe_id = _live_queue_entry_id(queue_entries, task_id)
+        request = requests.get(task_id)
+        partial = partial_transfers.get(qe_id) if qe_id is not None else None
+
+        can_stay_paused = False
+        if request is not None and partial is not None:
+            try:
+                decision = plan_resume(
+                    partial, expected_dir=request.destination_dir, task_attempt_count=task.attempt_count
+                )
+                can_stay_paused = decision.kind == ResumeDecisionKind.ATTEMPT_RANGE
+            except PartialTransferConsistencyError:
+                can_stay_paused = False
+
+        if can_stay_paused:
+            actions.append(
+                RecoveryAction(
+                    task_id, qe_id, task.state.name, task.state.name, RecoveryActionReason.PAUSED_PRESERVED
+                )
+            )
+            return
+
+        recovered = replace(task, state=DownloadTaskState.READY, updated_at=now, finished_at=None)
+        tasks[task_id] = recovered
+        actions.append(
+            RecoveryAction(
+                task_id, qe_id, task.state.name, recovered.state.name, RecoveryActionReason.INTERRUPTED_PAUSE
+            )
+        )
 
     def _recover_retry_wait_task(
         self,

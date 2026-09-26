@@ -190,7 +190,7 @@ begins only once normal A3/A5 scheduling starts afterward.
 | RESOLVING | CREATED | no resumable resolver contract exists |
 | READY | READY | untouched |
 | TRANSFERRING | READY | no safe partial resume; attempt_count preserved |
-| PAUSED (task-level) | READY | the old connection is dead; not `resume_transfer()` |
+| PAUSED (task-level) | PAUSED / READY | **updated by Prompt A9** -- see below |
 | RETRY_WAIT | RETRY_WAIT / READY / FAILED | see retry restoration below |
 | VERIFYING | READY | no durable verification-continuation contract |
 | POST_PROCESSING | READY | a half-finished remux/ffmpeg step is not assumed valid |
@@ -200,6 +200,24 @@ Every non-trivial normalization also clears `finished_at` to `None`
 (nonterminal tasks must never carry a stale terminal timestamp) and bumps
 `updated_at` to the recovery time, while `created_at`/`started_at`/
 `attempt_count`/`last_failure` are preserved as-is.
+
+### PAUSED restoration (updated by Prompt A9)
+
+Originally (A8): task-level `PAUSED` always normalized to `READY`, because
+no real transfer pause/resume existed yet, so "continuing" a `PAUSED`
+transfer was indistinguishable from any other interrupted state.
+
+Prompt A9 adds real, safe partial resume, so this rule is now:
+`PAUSED` recovers to `PAUSED` **unchanged** if and only if its queue
+occurrence has a durable `PartialTransferState` that passes the exact
+same LOCAL validation real dispatch would apply (path ownership,
+`durable_bytes` vs. actual file size, prefix SHA-256 --
+`rychlik.core.partial_transfer.plan_resume()`). Recovery still never
+issues a network request; this is local-only proof. Missing, corrupt, or
+unowned partial state recovers `PAUSED` to `READY` instead, exactly like
+every other transient state -- continuation of the same paused transfer
+is never claimed without that proof. See docs/SAFE_PARTIAL_RESUME.md for
+the full resume-safety model this reuses.
 
 ### Queue recovery
 
@@ -247,13 +265,17 @@ treated as structural corruption and fails loudly rather than guessing.
 ## `.part` policy
 
 `DirectHttpAcquisition` already opens its temp file with `Path.open("wb")`
-(truncate-on-open), so a stale `.part` left behind by a killed process is
-safely overwritten byte-for-byte by the next attempt -- **no code change
-was needed here**; a real-crash E2E regression test proves it
-(byte-exact final file after a genuinely killed mid-transfer child
-process). A8 does not implement Range resume, ETag continuation, or any
-partial-byte trust of an existing `.part` file, and does not globally
-scan the filesystem for stray `.part` files.
+(truncate-on-open) for a plain full download, so a stale `.part` left
+behind by a killed process is safely overwritten byte-for-byte by the
+next non-resuming attempt -- **no code change was needed here**; a
+real-crash E2E regression test proves it (byte-exact final file after a
+genuinely killed mid-transfer child process). A8 itself does not
+implement Range resume, ETag continuation, or any partial-byte trust of
+an existing `.part` file, and does not globally scan the filesystem for
+stray `.part` files. **Prompt A9 adds validated Range resume on top of
+this** (see docs/SAFE_PARTIAL_RESUME.md) -- the truncate-on-open safety
+net above still applies unconditionally whenever a resume attempt is
+rejected and falls back to a fresh download.
 
 ## Known limitations
 

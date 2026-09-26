@@ -81,6 +81,21 @@ zero extra code in A6 — the attempt-number match against A2's own
 `DownloadTask.attempt_count` is what makes this correct, not a second
 counter.
 
+## Resume offset seeding (Prompt A9 addition)
+
+`begin_attempt()` gained one additive keyword parameter,
+`initial_bytes: int = 0` (default preserves every pre-A9 caller
+byte-for-byte). When a transfer safely resumes from a validated durable
+byte offset (see docs/SAFE_PARTIAL_RESUME.md), the new attempt's telemetry
+starts already reporting `initial_bytes` downloaded, but a single seed
+sample `(now, initial_bytes)` is recorded so speed history still starts
+genuinely fresh -- the first real speed estimate can only come from bytes
+received strictly *after* resume, never from
+`initial_bytes / tiny_elapsed_time`. A full Range-rejection fallback to
+byte 0 is just a normal `begin_attempt(..., initial_bytes=0)` call (the
+default), so the flat snapshot naturally shows progress resetting to zero
+rather than freezing at a stale partial fraction.
+
 ## Speed estimator
 
 Bounded recent-window rate: samples within the last

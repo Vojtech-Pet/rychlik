@@ -314,6 +314,35 @@ def test_malformed_update_does_not_raise():
 # --- structural import test --------------------------------------------------
 
 
+# --- Prompt A9: begin_attempt(initial_bytes=...) resume seeding -------------
+
+
+def test_begin_attempt_initial_bytes_seeds_snapshot():
+    registry, clock = _registry()
+    reporter = registry.begin_attempt("A", "qe-A", 2, initial_bytes=5000)
+    snap = registry.snapshot("qe-A")
+    assert snap.bytes_downloaded == 5000
+    assert snap.has_started is True
+    assert snap.speed_bps is None  # only one sample so far -- no rate yet
+
+
+def test_begin_attempt_initial_bytes_speed_ignores_pre_resume_bytes():
+    registry, clock = _registry()
+    reporter = registry.begin_attempt("A", "qe-A", 2, initial_bytes=5000)
+    clock.advance(1.0)
+    reporter(5100)  # 100 new bytes over 1 real second
+    snap = registry.snapshot("qe-A")
+    assert snap.speed_bps == 100.0  # never (5100 / tiny_elapsed) from the old 5000
+
+
+def test_begin_attempt_default_initial_bytes_is_zero_backward_compatible():
+    registry, clock = _registry()
+    registry.begin_attempt("A", "qe-A", 1)
+    snap = registry.snapshot("qe-A")
+    assert snap.bytes_downloaded == 0
+    assert snap.has_started is False
+
+
 def test_module_has_no_forbidden_imports():
     import ast
 

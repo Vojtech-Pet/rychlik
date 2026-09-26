@@ -122,12 +122,28 @@ class ProgressRegistry:
 
     # --- attempt lifecycle -------------------------------------------------
 
-    def begin_attempt(self, task_id: str, queue_entry_id: str, attempt_number: int) -> "ProgressReporter":
+    def begin_attempt(
+        self, task_id: str, queue_entry_id: str, attempt_number: int, *, initial_bytes: int = 0
+    ) -> "ProgressReporter":
         """Resets telemetry for a fresh attempt (§14): a brand-new record
         replaces whatever was there before, discarding prior sample
-        history/byte count entirely -- no carryover across a retry."""
+        history/byte count entirely -- no carryover across a retry.
+
+        `initial_bytes` is a Prompt A9 extension (§78/§79/§80): when a
+        transfer resumes from a validated durable byte offset, the new
+        attempt's telemetry starts already reporting that many bytes, but
+        speed history starts genuinely fresh -- a single seed sample at
+        (now, initial_bytes) means the first real speed estimate can only
+        come from bytes received AFTER resume, never from
+        `initial_bytes / (tiny elapsed time)`. `initial_bytes=0` (the
+        default) is byte-for-byte identical to every pre-A9 caller."""
         with self._lock:
-            self._records[queue_entry_id] = _AttemptRecord(task_id, attempt_number)
+            record = _AttemptRecord(task_id, attempt_number)
+            if initial_bytes > 0:
+                record.bytes_downloaded = initial_bytes
+                record.started = True
+                record.samples.append(_Sample(at=self._monotonic(), bytes_downloaded=initial_bytes))
+            self._records[queue_entry_id] = record
         return ProgressReporter(self, TransferAttemptKey(task_id, queue_entry_id, attempt_number))
 
     def report(

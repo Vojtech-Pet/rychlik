@@ -25,12 +25,13 @@ def _entry(**kwargs) -> QueueEntry:
     return QueueEntry(**defaults)
 
 
-def _state(tasks=(), requests=(), queue_entries=(), retry_schedules=()):
+def _state(tasks=(), requests=(), queue_entries=(), retry_schedules=(), partial_transfers=()):
     return PersistentDownloadState(
         tasks={t.task_id: t for t in tasks},
         requests=dict(requests),
         queue_entries={e.queue_entry_id: e for e in queue_entries},
         retry_schedules={s.queue_entry_id: s for s in retry_schedules},
+        partial_transfers={p.queue_entry_id: p for p in partial_transfers},
     )
 
 
@@ -96,6 +97,48 @@ def test_queue_paused_preserved_distinct_from_task_paused():
     result = _recover(_state(tasks=[task], queue_entries=[entry]))
     assert result.state.tasks["A"].state == DownloadTaskState.READY
     assert result.state.queue_entries["qe-A"].state == QueueEntryState.PAUSED
+
+
+def test_paused_with_valid_partial_stays_paused(tmp_path):
+    import hashlib
+
+    from rychlik.acquisition.contracts import DownloadRequest
+    from rychlik.core.partial_transfer import PartialTransferState, ValidatorKind
+
+    task = (
+        create_task("A", now=T0)
+        .mark_ready(now=T0)
+        .start_transfer(now=T0)
+        .pause_transfer(now=T0)
+    )
+    request = DownloadRequest(url="http://x/y", destination_dir=tmp_path, filename_hint="video")
+    prefix = b"hello"
+    part_path = request.destination_dir / "video.part"
+    part_path.write_bytes(prefix)
+    partial = PartialTransferState(
+        queue_entry_id="qe-A", task_id="A", attempt_count_snapshot=1,
+        temp_path=part_path, final_path=request.destination_dir / "video",
+        durable_bytes=len(prefix), expected_total_bytes=None,
+        validator_kind=ValidatorKind.STRONG_ETAG, validator_value='"x"',
+        prefix_sha256=hashlib.sha256(prefix).hexdigest(), created_at=T0, updated_at=T0,
+    )
+    result = _recover(
+        _state(tasks=[task], queue_entries=[_entry()], requests={"A": request}, partial_transfers=[partial])
+    )
+    assert result.state.tasks["A"].state == DownloadTaskState.PAUSED
+    assert any(a.reason == RecoveryActionReason.PAUSED_PRESERVED for a in result.report.actions)
+
+
+def test_paused_without_valid_partial_recovers_to_ready():
+    task = (
+        create_task("A", now=T0)
+        .mark_ready(now=T0)
+        .start_transfer(now=T0)
+        .pause_transfer(now=T0)
+    )
+    result = _recover(_state(tasks=[task], queue_entries=[_entry()]))  # no request, no partial
+    assert result.state.tasks["A"].state == DownloadTaskState.READY
+    assert any(a.reason == RecoveryActionReason.INTERRUPTED_PAUSE for a in result.report.actions)
 
 
 def test_terminal_states_preserved():

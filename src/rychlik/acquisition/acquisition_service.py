@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 
-from rychlik.acquisition.contracts import CompletedDownload, DownloadRequest
+from rychlik.acquisition.contracts import CompletedDownload, DownloadRequest, ResumeRequest
 from rychlik.acquisition.direct_http import DirectHttpAcquisition, ProgressCallback
 
 
@@ -23,9 +23,17 @@ class AcquisitionService:
         *,
         progress_callback: ProgressCallback | None = None,
         cancel_event: threading.Event | None = None,
+        pause_event: threading.Event | None = None,
+        resume: ResumeRequest | None = None,
     ) -> CompletedDownload:
         # Only one backend exists in this phase (Prompt 04.5). Backend selection
-        # by URL scheme/site (yt-dlp, etc.) is deferred.
+        # by URL scheme/site (yt-dlp, etc.) is deferred. `pause_event`/`resume`
+        # are Prompt A9 additions, both optional/None by default -- a thin
+        # passthrough to the backend, this dispatcher owns no resume logic.
         return self._http_backend.acquire(
-            request, progress_callback=progress_callback, cancel_event=cancel_event
+            request,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+            pause_event=pause_event,
+            resume=resume,
         )

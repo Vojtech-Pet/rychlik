@@ -29,7 +29,7 @@ import sqlite3
 import stat
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
@@ -37,8 +37,9 @@ from typing import Iterator
 from rychlik.acquisition.contracts import DownloadRequest
 from rychlik.core.download_queue import QueueEntry, QueueEntryState, QueuePriority
 from rychlik.core.download_task import DownloadTask, DownloadTaskFailure, DownloadTaskState, restore_task
+from rychlik.core.partial_transfer import PartialTransferState, ValidatorKind
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA_VERSION_KEY = "schema_version"
 _CLEAN_SHUTDOWN_KEY = "clean_shutdown"
@@ -93,6 +94,7 @@ class PersistentDownloadState:
     requests: dict[str, DownloadRequest]
     queue_entries: dict[str, QueueEntry]
     retry_schedules: dict[str, PersistedRetrySchedule]
+    partial_transfers: dict[str, PartialTransferState] = field(default_factory=dict)
 
 
 def default_state_db_path() -> Path:
@@ -164,7 +166,6 @@ class SqliteDownloadStateStore:
         except OSError:
             pass  # best-effort on filesystems that don't support POSIX perms
 
-        is_new = not self._path.exists()
         conn = sqlite3.connect(self._path, isolation_level=None, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
@@ -182,6 +183,18 @@ class SqliteDownloadStateStore:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
+            row = conn.execute(
+                "SELECT value FROM metadata WHERE key = ?", (_SCHEMA_VERSION_KEY,)
+            ).fetchone()
+            on_disk_version = int(row["value"]) if row is not None else None
+            if on_disk_version is not None and on_disk_version > SCHEMA_VERSION:
+                # §10/§41: fail BEFORE creating/touching any other table --
+                # this transaction rolls back to a byte-identical database.
+                raise UnsupportedStateSchemaError(
+                    f"state database schema_version={on_disk_version} is newer than this runtime "
+                    f"supports (schema_version={SCHEMA_VERSION}); refusing to touch it"
+                )
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS download_tasks (
@@ -234,8 +247,31 @@ class SqliteDownloadStateStore:
                 )
                 """
             )
+            # Prompt A9 (schema v2): added via CREATE TABLE IF NOT EXISTS so
+            # this same transaction both creates a brand-new v2 database AND
+            # real-migrates an existing v1 database (§39/§40) -- an old v1
+            # file gains this table and nothing else changes; no row from
+            # the four v1 tables is touched, copied, or dropped.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS partial_transfers (
+                    queue_entry_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    attempt_count_snapshot INTEGER NOT NULL,
+                    temp_path TEXT NOT NULL,
+                    final_path TEXT NOT NULL,
+                    durable_bytes INTEGER NOT NULL,
+                    expected_total_bytes INTEGER,
+                    validator_kind TEXT NOT NULL,
+                    validator_value TEXT,
+                    prefix_sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
 
-            if is_new:
+            if on_disk_version is None:
                 conn.execute(
                     "INSERT INTO metadata (key, value) VALUES (?, ?)",
                     (_SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)),
@@ -243,26 +279,16 @@ class SqliteDownloadStateStore:
                 conn.execute(
                     "INSERT INTO metadata (key, value) VALUES (?, ?)", (_CLEAN_SHUTDOWN_KEY, "0")
                 )
-
-        self._validate_schema_version()
+            elif on_disk_version < SCHEMA_VERSION:
+                conn.execute(
+                    "UPDATE metadata SET value = ? WHERE key = ?",
+                    (str(SCHEMA_VERSION), _SCHEMA_VERSION_KEY),
+                )
 
     def close(self) -> None:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
-
-    def _validate_schema_version(self) -> None:
-        row = self._conn.execute(
-            "SELECT value FROM metadata WHERE key = ?", (_SCHEMA_VERSION_KEY,)
-        ).fetchone()
-        if row is None:
-            raise PersistentStateCorruptionError("state database is missing schema_version metadata")
-        on_disk_version = int(row["value"])
-        if on_disk_version > SCHEMA_VERSION:
-            raise UnsupportedStateSchemaError(
-                f"state database schema_version={on_disk_version} is newer than this runtime "
-                f"supports (schema_version={SCHEMA_VERSION}); refusing to touch it"
-            )
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -313,10 +339,14 @@ class SqliteDownloadStateStore:
         delete_queue_entry_id: str | None = None,
         retry_schedule: PersistedRetrySchedule | None = None,
         delete_retry_schedule_id: str | None = None,
+        partial_transfer: PartialTransferState | None = None,
+        delete_partial_transfer_id: str | None = None,
     ) -> None:
         """One SQLite transaction (§23/§67) writing exactly the rows a single
         durable lifecycle event touches. Never called per A7 progress chunk
-        (§74) -- only on lifecycle/queue events."""
+        (§74) -- only on lifecycle/queue/resume-checkpoint events (Prompt A9
+        adds `partial_transfer`/`delete_partial_transfer_id`, following the
+        exact same additive pattern as the A8 retry-schedule fields)."""
         with self._transaction():
             self._upsert_task(task)
             if request is not None:
@@ -333,6 +363,13 @@ class SqliteDownloadStateStore:
                 self._conn.execute(
                     "DELETE FROM retry_schedules WHERE queue_entry_id = ?",
                     (delete_retry_schedule_id,),
+                )
+            if partial_transfer is not None:
+                self._upsert_partial_transfer(partial_transfer)
+            if delete_partial_transfer_id is not None:
+                self._conn.execute(
+                    "DELETE FROM partial_transfers WHERE queue_entry_id = ?",
+                    (delete_partial_transfer_id,),
                 )
 
     def _upsert_task(self, task: DownloadTask) -> None:
@@ -432,6 +469,43 @@ class SqliteDownloadStateStore:
             ),
         )
 
+    def _upsert_partial_transfer(self, partial: PartialTransferState) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO partial_transfers
+                (queue_entry_id, task_id, attempt_count_snapshot, temp_path, final_path,
+                 durable_bytes, expected_total_bytes, validator_kind, validator_value,
+                 prefix_sha256, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(queue_entry_id) DO UPDATE SET
+                task_id = excluded.task_id,
+                attempt_count_snapshot = excluded.attempt_count_snapshot,
+                temp_path = excluded.temp_path,
+                final_path = excluded.final_path,
+                durable_bytes = excluded.durable_bytes,
+                expected_total_bytes = excluded.expected_total_bytes,
+                validator_kind = excluded.validator_kind,
+                validator_value = excluded.validator_value,
+                prefix_sha256 = excluded.prefix_sha256,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                partial.queue_entry_id,
+                partial.task_id,
+                partial.attempt_count_snapshot,
+                str(partial.temp_path),
+                str(partial.final_path),
+                partial.durable_bytes,
+                partial.expected_total_bytes,
+                _enum_name(partial.validator_kind),
+                partial.validator_value,
+                partial.prefix_sha256,
+                _to_utc_iso(partial.created_at),
+                _to_utc_iso(partial.updated_at),
+            ),
+        )
+
     # --- whole-snapshot checkpoint (§67/§68), used for initial save and
     # for persisting recovery's canonical post-recovery state (§88 step 8) --
 
@@ -440,6 +514,7 @@ class SqliteDownloadStateStore:
         rows no longer present in `state` do not survive as ghost live
         state."""
         with self._transaction():
+            self._conn.execute("DELETE FROM partial_transfers")
             self._conn.execute("DELETE FROM retry_schedules")
             self._conn.execute("DELETE FROM queue_entries")
             self._conn.execute("DELETE FROM download_requests")
@@ -452,12 +527,44 @@ class SqliteDownloadStateStore:
                 self._upsert_queue_entry(entry)
             for schedule in state.retry_schedules.values():
                 self._upsert_retry_schedule(schedule)
+            for partial in state.partial_transfers.values():
+                self._upsert_partial_transfer(partial)
 
     # --- load (§88 step 5, §109/§110) -----------------------------------
 
     def load(self) -> PersistentDownloadState:
         with self._lock:
             return self._load_locked()
+
+    def load_partial_transfer(self, queue_entry_id: str) -> PartialTransferState | None:
+        """Narrow single-row query (Prompt A9): the live dispatch path calls
+        this once per attempt rather than a full load() (§100 -- avoid
+        unnecessary cost on the hot path; the actual prefix re-hash cost is
+        accepted only once, at resume time, per §101)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM partial_transfers WHERE queue_entry_id = ?", (queue_entry_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return PartialTransferState(
+                queue_entry_id=row["queue_entry_id"],
+                task_id=row["task_id"],
+                attempt_count_snapshot=row["attempt_count_snapshot"],
+                temp_path=Path(row["temp_path"]),
+                final_path=Path(row["final_path"]),
+                durable_bytes=row["durable_bytes"],
+                expected_total_bytes=row["expected_total_bytes"],
+                validator_kind=_parse_enum(
+                    ValidatorKind,
+                    row["validator_kind"],
+                    context=f"partial_transfers.queue_entry_id={row['queue_entry_id']!r}",
+                ),
+                validator_value=row["validator_value"],
+                prefix_sha256=row["prefix_sha256"],
+                created_at=_from_utc_iso(row["created_at"]),
+                updated_at=_from_utc_iso(row["updated_at"]),
+            )
 
     def _load_locked(self) -> PersistentDownloadState:
         tasks: dict[str, DownloadTask] = {}
@@ -529,6 +636,36 @@ class SqliteDownloadStateStore:
                 not_before_utc=_from_utc_iso(row["not_before_utc"]),
             )
 
+        partial_transfers: dict[str, PartialTransferState] = {}
+        for row in self._conn.execute("SELECT * FROM partial_transfers"):
+            if row["task_id"] not in tasks:
+                raise PersistentStateCorruptionError(
+                    f"partial_transfer {row['queue_entry_id']!r} references unknown task_id "
+                    f"{row['task_id']!r}"
+                )
+            partial_transfers[row["queue_entry_id"]] = PartialTransferState(
+                queue_entry_id=row["queue_entry_id"],
+                task_id=row["task_id"],
+                attempt_count_snapshot=row["attempt_count_snapshot"],
+                temp_path=Path(row["temp_path"]),
+                final_path=Path(row["final_path"]),
+                durable_bytes=row["durable_bytes"],
+                expected_total_bytes=row["expected_total_bytes"],
+                validator_kind=_parse_enum(
+                    ValidatorKind,
+                    row["validator_kind"],
+                    context=f"partial_transfers.queue_entry_id={row['queue_entry_id']!r}",
+                ),
+                validator_value=row["validator_value"],
+                prefix_sha256=row["prefix_sha256"],
+                created_at=_from_utc_iso(row["created_at"]),
+                updated_at=_from_utc_iso(row["updated_at"]),
+            )
+
         return PersistentDownloadState(
-            tasks=tasks, requests=requests, queue_entries=queue_entries, retry_schedules=retry_schedules
+            tasks=tasks,
+            requests=requests,
+            queue_entries=queue_entries,
+            retry_schedules=retry_schedules,
+            partial_transfers=partial_transfers,
         )
