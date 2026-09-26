@@ -139,6 +139,46 @@ class DownloadQueue:
         self._entries: dict[str, QueueEntry] = {}  # every entry ever created, including REMOVED
         self._bands: dict[QueuePriority, list[str]] = {p: [] for p in QueuePriority}
 
+    @classmethod
+    def restore(cls, entries: "list[QueueEntry] | tuple[QueueEntry, ...]", *, clock: Clock = _utc_now) -> "DownloadQueue":
+        """Rehydrate a queue from previously-persisted entries (Prompt A8).
+
+        This is NOT a sequence of enqueue()/pause()/... calls -- it directly
+        reconstructs the aggregate's internal bands from already-valid
+        QueueEntry facts, preserving exact queue_entry_id/task_id/priority/
+        position/state. It re-validates the same invariants enqueue() itself
+        guards (§14/§66): each band's positions must be a contiguous 0..n-1
+        permutation, and no task_id may have more than one live (non-REMOVED)
+        entry. A malformed persisted database must fail loudly here rather
+        than silently pick one of two conflicting live entries."""
+        queue = cls(clock=clock)
+        live_task_ids: dict[str, str] = {}  # task_id -> queue_entry_id, live entries only
+        for entry in entries:
+            queue._entries[entry.queue_entry_id] = entry
+            if entry.state != QueueEntryState.REMOVED:
+                existing = live_task_ids.get(entry.task_id)
+                if existing is not None:
+                    raise DuplicateQueuedTaskError(
+                        f"task_id {entry.task_id!r} has more than one live queue entry "
+                        f"on restore: {existing!r} and {entry.queue_entry_id!r}"
+                    )
+                live_task_ids[entry.task_id] = entry.queue_entry_id
+
+        for priority in QueuePriority:
+            band_entries = sorted(
+                (e for e in entries if e.priority == priority and e.state != QueueEntryState.REMOVED),
+                key=lambda e: e.position,
+            )
+            expected_positions = list(range(len(band_entries)))
+            actual_positions = [e.position for e in band_entries]
+            if actual_positions != expected_positions:
+                raise InvalidQueueOperationError(
+                    f"corrupt persisted queue: {priority.name} band positions {actual_positions!r} "
+                    f"are not a contiguous 0..{len(band_entries) - 1} permutation"
+                )
+            queue._bands[priority] = [e.queue_entry_id for e in band_entries]
+        return queue
+
     # --- read-only projections ---------------------------------------
 
     def get(self, entry_id: str) -> QueueEntry:

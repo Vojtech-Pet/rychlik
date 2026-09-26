@@ -75,6 +75,15 @@ class DispatchExecutionError(DispatchCoordinatorError):
     `from exc`); it is never stored inside DownloadTask/DownloadTaskFailure."""
 
 
+class DispatchCheckpointError(DispatchCoordinatorError):
+    """Raised when a caller-supplied `checkpoint` callback (Prompt A8) fails.
+    Critically, when this happens for the PRE-NETWORK checkpoint (right
+    after start_transfer(), before AcquisitionService is called), the
+    network transfer is never started (§81) -- an unpersisted TRANSFERRING
+    must never begin real I/O. The original exception is available via
+    `__cause__`."""
+
+
 class DispatchOutcome(Enum):
     COMPLETED = "COMPLETED"
     RETRY_WAIT = "RETRY_WAIT"
@@ -129,6 +138,7 @@ class DispatchCoordinator:
         cancel_event=None,
         lock: ContextManager | None = None,
         progress_registry: ProgressRegistry | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> DispatchExecutionResult:
         """`lock` is a Prompt A5 concurrency extension (§23/§24): an
         optional context manager (e.g. a shared `threading.RLock`) guarding
@@ -146,13 +156,35 @@ class DispatchCoordinator:
         succeeds and used as the acquisition progress callback (composed
         with any caller-supplied `progress_callback`, if also given).
         `progress_registry=None` (the default) behaves exactly as before --
-        no telemetry, fully backward compatible."""
+        no telemetry, fully backward compatible.
+
+        `checkpoint` is a Prompt A8 extension (§79-86): a no-arg callable
+        invoked, still under `lock`, immediately after every durable
+        lifecycle mutation this method makes -- right after start_transfer()
+        (before any network call), and again after each terminal/RETRY_WAIT/
+        CANCELLED transition. It never receives arguments; a caller wanting
+        richer information reads it from the same `tasks`/`queue`/`requests`
+        objects it already owns. `checkpoint=None` (the default) is fully
+        backward compatible -- no persistence, identical to every prior
+        phase. If `checkpoint()` raises during the PRE-NETWORK call, the
+        network transfer is never started (§81) -- the exception propagates
+        as `DispatchCheckpointError` instead."""
 
         def _locked() -> ContextManager:
             return lock if lock is not None else contextlib.nullcontext()
 
+        def _checkpoint() -> None:
+            if checkpoint is None:
+                return
+            try:
+                checkpoint()
+            except Exception as exc:
+                raise DispatchCheckpointError("checkpoint callback failed") from exc
+
         with _locked():
             prepared = self._prepare(candidate, queue=queue, tasks=tasks, requests=requests, now=now)
+            if not isinstance(prepared, DispatchExecutionResult):
+                _checkpoint()  # pre-network (§79/§80): must succeed before any AcquisitionService call
         if isinstance(prepared, DispatchExecutionResult):
             return prepared  # STALE, decided entirely under the lock
         task, request = prepared
@@ -180,6 +212,7 @@ class DispatchCoordinator:
                 task = task.cancel(now=now)
                 tasks[candidate.task_id] = task
                 queue.remove(candidate.queue_entry_id, now=now)
+                _checkpoint()
             return DispatchExecutionResult(
                 candidate.queue_entry_id, candidate.task_id, DispatchOutcome.CANCELLED
             )
@@ -189,6 +222,7 @@ class DispatchCoordinator:
                 with _locked():
                     task = task.wait_for_retry(failure, now=now)
                     tasks[candidate.task_id] = task
+                    _checkpoint()
                 # QueueEntry deliberately stays QUEUED (§16/§18): candidate
                 # eligibility already requires Task READY, so a RETRY_WAIT
                 # task cannot be re-dispatched, and priority/position survive
@@ -203,6 +237,7 @@ class DispatchCoordinator:
                 task = task.fail(failure, now=now)
                 tasks[candidate.task_id] = task
                 queue.remove(candidate.queue_entry_id, now=now)
+                _checkpoint()
             return DispatchExecutionResult(
                 candidate.queue_entry_id, candidate.task_id, DispatchOutcome.FAILED, failure=failure
             )
@@ -216,6 +251,7 @@ class DispatchCoordinator:
                 task = task.fail(failure, now=now)
                 tasks[candidate.task_id] = task
                 queue.remove(candidate.queue_entry_id, now=now)
+                _checkpoint()
             raise DispatchExecutionError(
                 f"unexpected error during acquisition for task {candidate.task_id!r}"
             ) from exc
@@ -224,6 +260,7 @@ class DispatchCoordinator:
             task = task.complete(now=now)
             tasks[candidate.task_id] = task
             queue.remove(candidate.queue_entry_id, now=now)
+            _checkpoint()
         return DispatchExecutionResult(
             candidate.queue_entry_id,
             candidate.task_id,

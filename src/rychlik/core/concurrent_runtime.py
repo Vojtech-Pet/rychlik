@@ -46,7 +46,7 @@ import threading
 import time
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Callable, Mapping, MutableMapping
 
@@ -61,8 +61,10 @@ from rychlik.core.download_queue import DownloadQueue, QueueEntryState, UnknownQ
 from rychlik.core.download_task import DownloadTask, DownloadTaskState
 from rychlik.core.download_view import DownloadManagerSnapshot, build_manager_snapshot
 from rychlik.core.progress import ProgressRegistry
+from rychlik.core.restart_recovery import RetrySeed
 from rychlik.core.retry_policy import RetryPolicy
 from rychlik.core.scheduler_policy import DispatchCandidate, SchedulerConfig, SchedulerPolicy
+from rychlik.core.state_store import PersistedRetrySchedule, SqliteDownloadStateStore
 
 
 class ConcurrentRuntimeError(Exception):
@@ -149,6 +151,8 @@ class ConcurrentDownloadRuntime:
         retry_policy: RetryPolicy | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         progress_registry: ProgressRegistry | None = None,
+        state_store: SqliteDownloadStateStore | None = None,
+        initial_retry_schedule: tuple[RetrySeed, ...] = (),
     ) -> None:
         self._queue = queue
         self._tasks = tasks
@@ -166,6 +170,9 @@ class ConcurrentDownloadRuntime:
         self._monotonic = monotonic
         # None (default) = exactly A5/A6 behavior: no telemetry collected.
         self._progress_registry = progress_registry
+        # None (default) = exactly A5/A6/A7 behavior: no durable persistence
+        # at all (Prompt A8). See docs/PERSISTENT_DOWNLOAD_STATE.md.
+        self._state_store = state_store
 
         # One runtime coordination lock (§20/§21) protects all shared
         # Queue/Task reads+mutations the runtime performs, and is handed to
@@ -183,7 +190,14 @@ class ConcurrentDownloadRuntime:
         # Retry schedule and events live independently of _in_flight: a
         # backing-off task is NOT reserved/in-flight (§43) -- it consumes no
         # transfer slot while it waits.
-        self._retry_schedule: dict[str, _RetrySchedule] = {}
+        self._retry_schedule: dict[str, _RetrySchedule] = {
+            seed.queue_entry_id: _RetrySchedule(
+                task_id=seed.task_id,
+                due_monotonic=seed.due_monotonic,
+                attempt_count_snapshot=seed.attempt_count_snapshot,
+            )
+            for seed in initial_retry_schedule
+        }
         self._retry_events: list[RetryRuntimeEvent] = []
         self._retry_events_lock = threading.Lock()
 
@@ -276,6 +290,49 @@ class ConcurrentDownloadRuntime:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.005)
+
+    # --- durable checkpoints (Prompt A8) ------------------------------------
+
+    def checkpoint_task(self, task_id: str, *, queue_entry_id: str | None = None) -> None:
+        """Persist current durable facts for one task/request/queue-entry
+        (§75/§76). Callers invoke this after any durable queue/task mutation
+        performed OUTSIDE the dispatch loop -- enqueue, pause, resume,
+        set_priority, move_before/after, remove. No-op if no state_store was
+        configured (default None = exactly A5/A6/A7 behavior, no
+        persistence). A1/A2 themselves stay database-independent (§77/§78);
+        this method is the only place that bridges them to SQLite."""
+        if self._state_store is None:
+            return
+        with self._state_lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+            request = self._requests.get(task_id)
+            queue_entry = None
+            if queue_entry_id is not None:
+                try:
+                    queue_entry = self._queue.get(queue_entry_id)
+                except UnknownQueueEntryError:
+                    queue_entry = None
+            self._state_store.checkpoint_task_state(task=task, request=request, queue_entry=queue_entry)
+
+    def _checkpoint_dispatch_locked(self, candidate: DispatchCandidate) -> None:
+        """Built fresh per dispatch() call (§80): reads current facts from
+        the same tasks/queue objects the coordinator just mutated, under the
+        same lock. Called for every durable lifecycle event dispatch()
+        produces -- pre-network TRANSFERRING, CANCELLED, RETRY_WAIT, FAILED,
+        COMPLETED (§79/§82/§83)."""
+        if self._state_store is None:
+            return
+        task = self._tasks.get(candidate.task_id)
+        if task is None:
+            return
+        request = self._requests.get(candidate.task_id)
+        try:
+            queue_entry = self._queue.get(candidate.queue_entry_id)
+        except UnknownQueueEntryError:
+            queue_entry = None
+        self._state_store.checkpoint_task_state(task=task, request=request, queue_entry=queue_entry)
 
     # --- presentation snapshots (Prompt A7) ---------------------------------
 
@@ -386,6 +443,10 @@ class ConcurrentDownloadRuntime:
 
         updated = task.mark_retry_ready(now=self._clock())
         self._tasks[schedule.task_id] = updated
+        if self._state_store is not None:
+            self._state_store.checkpoint_task_state(
+                task=updated, delete_retry_schedule_id=queue_entry_id
+            )
         self._record_retry_event(
             queue_entry_id, schedule.task_id, RetryEventKind.READY, schedule.attempt_count_snapshot
         )
@@ -412,6 +473,19 @@ class ConcurrentDownloadRuntime:
             self._retry_schedule[candidate.queue_entry_id] = _RetrySchedule(
                 task_id=candidate.task_id, due_monotonic=due, attempt_count_snapshot=task.attempt_count
             )
+            if self._state_store is not None:
+                scheduled_at = self._clock()
+                self._state_store.checkpoint_task_state(
+                    task=task,
+                    retry_schedule=PersistedRetrySchedule(
+                        queue_entry_id=candidate.queue_entry_id,
+                        task_id=candidate.task_id,
+                        attempt_count_snapshot=task.attempt_count,
+                        delay_seconds=decision.delay_seconds,
+                        scheduled_at_utc=scheduled_at,
+                        not_before_utc=scheduled_at + timedelta(seconds=decision.delay_seconds),
+                    ),
+                )
             self._record_retry_event(
                 candidate.queue_entry_id,
                 candidate.task_id,
@@ -427,6 +501,12 @@ class ConcurrentDownloadRuntime:
             failed_task = task.fail(task.last_failure, now=self._clock())
             self._tasks[candidate.task_id] = failed_task
             self._queue.remove(candidate.queue_entry_id, now=self._clock())
+            if self._state_store is not None:
+                self._state_store.checkpoint_task_state(
+                    task=failed_task,
+                    queue_entry=self._queue.get(candidate.queue_entry_id),
+                    delete_retry_schedule_id=candidate.queue_entry_id,
+                )
             self._record_retry_event(
                 candidate.queue_entry_id, candidate.task_id, RetryEventKind.EXHAUSTED, task.attempt_count
             )
@@ -480,6 +560,11 @@ class ConcurrentDownloadRuntime:
                 now=self._clock(),
                 lock=self._state_lock,
                 progress_registry=self._progress_registry,
+                checkpoint=(
+                    (lambda: self._checkpoint_dispatch_locked(candidate))
+                    if self._state_store is not None
+                    else None
+                ),
             )
             if result.outcome == DispatchOutcome.RETRY_WAIT:
                 with self._state_lock:

@@ -252,6 +252,39 @@ class DownloadTask:
             )
 
 
+def restore_task(
+    task_id: str,
+    *,
+    state: DownloadTaskState,
+    created_at: datetime,
+    updated_at: datetime,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+    attempt_count: int = 0,
+    last_failure: DownloadTaskFailure | None = None,
+) -> DownloadTask:
+    """Rehydrate a task directly into an already-existing state (Prompt A8).
+
+    This is deliberately NOT a sequence of mark_ready()/start_transfer()/...
+    calls (§31): restoring persisted TRANSFERRING by replaying
+    CREATED -> READY -> TRANSFERRING would incorrectly re-run attempt_count
+    and timestamp side effects. The dataclass constructor already validates
+    every structural invariant (§32) -- non-negative attempt_count,
+    timezone-aware timestamps, FAILED requiring last_failure -- so this is a
+    thin, explicitly-named construction path for persistence/recovery
+    callers instead of reaching for DownloadTask(...) directly."""
+    return DownloadTask(
+        task_id=task_id,
+        state=state,
+        created_at=created_at,
+        updated_at=updated_at,
+        started_at=started_at,
+        finished_at=finished_at,
+        attempt_count=attempt_count,
+        last_failure=last_failure,
+    )
+
+
 def create_task(task_id: str, *, now: datetime) -> DownloadTask:
     """Factory: a brand-new task always starts CREATED (§19/§55)."""
     return DownloadTask(
