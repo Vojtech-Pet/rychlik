@@ -24,6 +24,9 @@ from __future__ import annotations
 import logging
 import re
 import threading
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -67,6 +70,30 @@ _PAGE_STATUS_CODES: dict[ShareStatus, HTTPStatus] = {
     ShareStatus.FAILED: HTTPStatus.NOT_FOUND,
 }
 
+_REQUEST_LOG_MAXLEN = 500
+
+
+@dataclass(frozen=True)
+class RequestLogEntry:
+    """Safe, sanitized record of one request (Prompt 13 §6).
+
+    Never includes: secret, cookies, source_url, local filesystem paths, or
+    authorization material — those simply aren't in scope here; this only
+    ever sees what the HTTP layer itself sees (route, method, headers,
+    status, byte count).
+    """
+
+    timestamp: datetime
+    route: str  # "page" | "preview" | "media" | "unknown"
+    method: str  # "GET" | "HEAD"
+    share_id: str | None
+    http_status: int
+    user_agent: str | None
+    range_header: str | None
+    bytes_served: int
+    result: str
+
+
 _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
@@ -84,6 +111,28 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):  # noqa: A002 - stdlib signature
         pass  # replaced by structured logging in the _handle_* methods
+
+    def _record(
+        self,
+        *,
+        route: str,
+        share_id: str | None,
+        status: int,
+        bytes_served: int = 0,
+        result: str = "",
+    ) -> None:
+        entry = RequestLogEntry(
+            timestamp=datetime.now(timezone.utc),
+            route=route,
+            method=self.command,
+            share_id=share_id,
+            http_status=status,
+            user_agent=self.headers.get("User-Agent"),
+            range_header=self.headers.get("Range"),
+            bytes_served=bytes_served,
+            result=result,
+        )
+        self.server.origin._append_request_log(entry)
 
     def do_HEAD(self) -> None:
         self._handle(send_body=False)
@@ -120,6 +169,7 @@ class _Handler(BaseHTTPRequestHandler):
         if link is None:
             self._send_html(HTTPStatus.NOT_FOUND, render_not_found_page(), send_body=send_body)
             _LOGGER.info("share_id=%s route=page result=unknown_share", share_id)
+            self._record(route="page", share_id=share_id, status=404, result="unknown_share")
             return
 
         status_code = _PAGE_STATUS_CODES.get(link.status, HTTPStatus.NOT_FOUND)
@@ -136,6 +186,9 @@ class _Handler(BaseHTTPRequestHandler):
         )
         self._send_html(status_code, body, send_body=send_body)
         _LOGGER.info("share_id=%s route=page status=%s result=served", share_id, link.status.name)
+        self._record(
+            route="page", share_id=share_id, status=int(status_code), result=f"served_{link.status.name.lower()}"
+        )
 
     def _send_html(self, status: HTTPStatus, body: str, *, send_body: bool) -> None:
         encoded = body.encode("utf-8")
@@ -159,27 +212,36 @@ class _Handler(BaseHTTPRequestHandler):
         link = origin.share_link_repository.get(share_id)
 
         if link is None:
-            self._empty_response(HTTPStatus.NOT_FOUND, share_id=share_id, result="unknown_share")
+            self._empty_response(HTTPStatus.NOT_FOUND, share_id=share_id, result="unknown_share", route="preview")
             return
 
         status_code = _PAGE_STATUS_CODES.get(link.status, HTTPStatus.NOT_FOUND)
         if status_code != HTTPStatus.OK:
-            self._empty_response(status_code, share_id=share_id, result=f"denied_{link.status.name.lower()}")
+            self._empty_response(
+                status_code,
+                share_id=share_id,
+                result=f"denied_{link.status.name.lower()}",
+                route="preview",
+            )
             return
 
         artifact = origin.artifact_repository.get(link.artifact_id)
         preview = self._resolve_preview(origin, artifact, link.artifact_id)
         if preview is None or preview.thumbnail_path is None:
-            self._empty_response(HTTPStatus.NOT_FOUND, share_id=share_id, result="no_thumbnail")
+            self._empty_response(HTTPStatus.NOT_FOUND, share_id=share_id, result="no_thumbnail", route="preview")
             return
 
         try:
             if not preview.thumbnail_path.is_file():
-                self._empty_response(HTTPStatus.NOT_FOUND, share_id=share_id, result="thumbnail_missing")
+                self._empty_response(
+                    HTTPStatus.NOT_FOUND, share_id=share_id, result="thumbnail_missing", route="preview"
+                )
                 return
             size = preview.thumbnail_path.stat().st_size
         except OSError:
-            self._empty_response(HTTPStatus.INTERNAL_SERVER_ERROR, share_id=share_id, result="os_error")
+            self._empty_response(
+                HTTPStatus.INTERNAL_SERVER_ERROR, share_id=share_id, result="os_error", route="preview"
+            )
             return
 
         self.send_response(HTTPStatus.OK)
@@ -190,6 +252,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.end_headers()
         _LOGGER.info("share_id=%s route=preview result=served bytes=%s", share_id, size)
+        self._record(route="preview", share_id=share_id, status=200, bytes_served=size, result="served")
 
         if send_body and size > 0:
             self._stream_file(preview.thumbnail_path, 0, size)
@@ -211,26 +274,32 @@ class _Handler(BaseHTTPRequestHandler):
 
         link = origin.share_link_repository.get(share_id)
         if link is None:
-            self._empty_response(HTTPStatus.NOT_FOUND, share_id=share_id, result="unknown_share")
+            self._empty_response(HTTPStatus.NOT_FOUND, share_id=share_id, result="unknown_share", route="media")
             return
 
         if link.status != ShareStatus.ACTIVE:
             code = _MEDIA_DENIED_STATUS_CODES.get(link.status, HTTPStatus.NOT_FOUND)
-            self._empty_response(code, share_id=share_id, result=f"denied_{link.status.name.lower()}")
+            self._empty_response(
+                code, share_id=share_id, result=f"denied_{link.status.name.lower()}", route="media"
+            )
             return
 
         artifact = origin.artifact_repository.get(link.artifact_id)
         if artifact is None:
-            self._empty_response(HTTPStatus.GONE, share_id=share_id, result="artifact_missing")
+            self._empty_response(HTTPStatus.GONE, share_id=share_id, result="artifact_missing", route="media")
             return
 
         try:
             resolved_path = resolve_artifact_file(artifact)
         except (FileNotFoundError, ArtifactChanged) as exc:
-            self._empty_response(HTTPStatus.GONE, share_id=share_id, result=f"artifact_changed:{exc}")
+            self._empty_response(
+                HTTPStatus.GONE, share_id=share_id, result=f"artifact_changed:{exc}", route="media"
+            )
             return
         except OSError:
-            self._empty_response(HTTPStatus.INTERNAL_SERVER_ERROR, share_id=share_id, result="os_error")
+            self._empty_response(
+                HTTPStatus.INTERNAL_SERVER_ERROR, share_id=share_id, result="os_error", route="media"
+            )
             return
 
         file_size = artifact.size
@@ -245,6 +314,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             _LOGGER.info("share_id=%s result=416_unsatisfiable", share_id)
+            self._record(route="media", share_id=share_id, status=416, result="416_unsatisfiable")
             return
 
         if parsed.outcome == RangeOutcome.SINGLE:
@@ -270,6 +340,8 @@ class _Handler(BaseHTTPRequestHandler):
             start,
             length,
         )
+        served_status = 206 if parsed.outcome == RangeOutcome.SINGLE else 200
+        self._record(route="media", share_id=share_id, status=served_status, bytes_served=length, result="served")
 
         if not send_body or length == 0:
             return
@@ -290,11 +362,19 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass  # client disconnected mid-stream; nothing more to do
 
-    def _empty_response(self, status: HTTPStatus, *, share_id: str | None = None, result: str = "") -> None:
+    def _empty_response(
+        self,
+        status: HTTPStatus,
+        *,
+        share_id: str | None = None,
+        result: str = "",
+        route: str = "unknown",
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Length", "0")
         self.end_headers()
         _LOGGER.info("share_id=%s http_status=%s result=%s", share_id, int(status), result)
+        self._record(route=route, share_id=share_id, status=int(status), result=result or "denied")
 
 
 class _OriginHTTPServer(ThreadingHTTPServer):
@@ -329,6 +409,23 @@ class LocalShareOrigin:
         self._server: _OriginHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._request_log: deque[RequestLogEntry] = deque(maxlen=_REQUEST_LOG_MAXLEN)
+        self._request_log_lock = threading.Lock()
+
+    def _append_request_log(self, entry: RequestLogEntry) -> None:
+        with self._request_log_lock:
+            self._request_log.append(entry)
+
+    @property
+    def request_log(self) -> list[RequestLogEntry]:
+        """Snapshot of the most recent requests (Prompt 13 experiment support).
+
+        Bounded to the last _REQUEST_LOG_MAXLEN entries, in-memory only, not
+        persisted. Safe by construction: RequestLogEntry never carries
+        secret/cookie/source_url/local-path fields.
+        """
+        with self._request_log_lock:
+            return list(self._request_log)
 
     @property
     def address(self) -> tuple[str, int] | None:
