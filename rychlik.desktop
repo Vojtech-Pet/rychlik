@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Rýchlik
+Comment=Rýchlik Desktop (functional skeleton)
+Exec=/mnt/Data/Rychlik-app/launch.sh
+Icon=folder-download
+Terminal=false
+Categories=Network;FileTransfer;
