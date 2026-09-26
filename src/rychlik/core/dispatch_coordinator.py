@@ -49,6 +49,7 @@ from rychlik.acquisition.contracts import (
 )
 from rychlik.core.download_queue import DownloadQueue, QueueEntryState, UnknownQueueEntryError
 from rychlik.core.download_task import DownloadTask, DownloadTaskFailure, DownloadTaskState
+from rychlik.core.progress import ProgressRegistry
 from rychlik.core.scheduler_policy import DispatchCandidate
 
 
@@ -127,6 +128,7 @@ class DispatchCoordinator:
         progress_callback=None,
         cancel_event=None,
         lock: ContextManager | None = None,
+        progress_registry: ProgressRegistry | None = None,
     ) -> DispatchExecutionResult:
         """`lock` is a Prompt A5 concurrency extension (§23/§24): an
         optional context manager (e.g. a shared `threading.RLock`) guarding
@@ -136,7 +138,15 @@ class DispatchCoordinator:
         so one worker blocked on I/O can never prevent another thread from
         planning or finalizing. `lock=None` (the default) behaves exactly as
         in Prompt A4 -- no synchronization overhead, fully backward
-        compatible with every existing synchronous caller/test."""
+        compatible with every existing synchronous caller/test.
+
+        `progress_registry` is a Prompt A7 extension (§59): when supplied,
+        a ProgressReporter bound to (task_id, queue_entry_id,
+        attempt_count) is created immediately after start_transfer()
+        succeeds and used as the acquisition progress callback (composed
+        with any caller-supplied `progress_callback`, if also given).
+        `progress_registry=None` (the default) behaves exactly as before --
+        no telemetry, fully backward compatible."""
 
         def _locked() -> ContextManager:
             return lock if lock is not None else contextlib.nullcontext()
@@ -147,9 +157,23 @@ class DispatchCoordinator:
             return prepared  # STALE, decided entirely under the lock
         task, request = prepared
 
+        effective_callback = progress_callback
+        if progress_registry is not None:
+            reporter = progress_registry.begin_attempt(
+                candidate.task_id, candidate.queue_entry_id, task.attempt_count
+            )
+            if progress_callback is not None:
+                user_callback = progress_callback
+
+                def effective_callback(bytes_downloaded, total_bytes=None):
+                    reporter(bytes_downloaded, total_bytes)
+                    user_callback(bytes_downloaded, total_bytes)
+            else:
+                effective_callback = reporter
+
         try:
             completed = self._acquisition_service.acquire(
-                request, progress_callback=progress_callback, cancel_event=cancel_event
+                request, progress_callback=effective_callback, cancel_event=cancel_event
             )
         except DownloadCancelled:
             with _locked():

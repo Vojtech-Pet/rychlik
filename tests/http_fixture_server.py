@@ -61,6 +61,19 @@ class _Handler(BaseHTTPRequestHandler):
             with server.track_lock:
                 server.active_count -= 1
             self._send_body(200, NORMAL_BODY, content_type="video/mp4")
+        elif self.path == "/unknown-length":
+            # Real unknown-total-size proof for Prompt A7: no Content-Length
+            # header at all, connection closed after the body so the client
+            # cannot infer total size upfront (matches DirectHttpAcquisition's
+            # total_bytes=None path when Content-Length is absent).
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.close_connection = True
+            self.end_headers()
+            for offset in range(0, len(NORMAL_BODY), 1024):
+                self.wfile.write(NORMAL_BODY[offset : offset + 1024])
+                self.wfile.flush()
+                time.sleep(0.01)
         elif self.path.startswith("/flaky/"):
             # Real transient-failure proof for Prompt A6: fails deterministically
             # for the first N requests under a given key, then succeeds -- no

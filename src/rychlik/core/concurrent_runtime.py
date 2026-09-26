@@ -28,6 +28,16 @@ behavior: a RETRY_WAIT task just sits until something external calls
 `mark_retry_ready()` + `notify_state_changed()` -- fully backward
 compatible, verified by every original A5 test remaining unmodified. See
 docs/RETRY_POLICY_BACKOFF.md for the retry runtime architecture.
+
+Prompt A7 extends this same module with an optional `progress_registry`
+(rychlik.core.progress.ProgressRegistry): when supplied, every worker
+binds a fresh ProgressReporter to its attempt right after start_transfer()
+and passes it through to DispatchCoordinator.dispatch(). Retries
+automatically get fresh telemetry (a new attempt_number -> a new
+ProgressRegistry record) with zero extra code here -- A6's retry
+machinery and A7's telemetry compose for free. `progress_registry=None`
+(the default) means exactly A5/A6 behavior, no telemetry at all. See
+docs/DOWNLOAD_PROGRESS_RUNTIME.md.
 """
 
 from __future__ import annotations
@@ -49,6 +59,8 @@ from rychlik.core.dispatch_coordinator import (
 )
 from rychlik.core.download_queue import DownloadQueue, QueueEntryState, UnknownQueueEntryError
 from rychlik.core.download_task import DownloadTask, DownloadTaskState
+from rychlik.core.download_view import DownloadManagerSnapshot, build_manager_snapshot
+from rychlik.core.progress import ProgressRegistry
 from rychlik.core.retry_policy import RetryPolicy
 from rychlik.core.scheduler_policy import DispatchCandidate, SchedulerConfig, SchedulerPolicy
 
@@ -136,6 +148,7 @@ class ConcurrentDownloadRuntime:
         clock: Callable[[], datetime] = _utc_now,
         retry_policy: RetryPolicy | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        progress_registry: ProgressRegistry | None = None,
     ) -> None:
         self._queue = queue
         self._tasks = tasks
@@ -151,6 +164,8 @@ class ConcurrentDownloadRuntime:
         # original A5 test valid unmodified.
         self._retry_policy = retry_policy
         self._monotonic = monotonic
+        # None (default) = exactly A5/A6 behavior: no telemetry collected.
+        self._progress_registry = progress_registry
 
         # One runtime coordination lock (§20/§21) protects all shared
         # Queue/Task reads+mutations the runtime performs, and is handed to
@@ -261,6 +276,24 @@ class ConcurrentDownloadRuntime:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.005)
+
+    # --- presentation snapshots (Prompt A7) ---------------------------------
+
+    def manager_snapshot(self, *, include_removed: tuple[str, ...] = ()) -> DownloadManagerSnapshot:
+        """Copy-then-compose (§90-92): the state lock is held only long
+        enough to copy queue/task facts, then released -- it is never held
+        while composing snapshots or while the (separately-locked)
+        ProgressRegistry is queried. The two locks are never nested; the
+        state lock is always acquired and released first, entirely on its
+        own, whenever a snapshot needs both facts (§91)."""
+        with self._state_lock:
+            entries = list(self._queue.active_entries())
+            entries.extend(self._queue.get(qeid) for qeid in include_removed)
+            tasks_copy = dict(self._tasks)
+
+        return build_manager_snapshot(
+            entries=entries, tasks=tasks_copy, requests=self._requests, progress_registry=self._progress_registry
+        )
 
     # --- controller loop ----------------------------------------------------
 
@@ -446,6 +479,7 @@ class ConcurrentDownloadRuntime:
                 requests=self._requests,
                 now=self._clock(),
                 lock=self._state_lock,
+                progress_registry=self._progress_registry,
             )
             if result.outcome == DispatchOutcome.RETRY_WAIT:
                 with self._state_lock:

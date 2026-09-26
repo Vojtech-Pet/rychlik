@@ -629,6 +629,90 @@ def test_no_lock_behaves_exactly_as_before():
     assert result.outcome == DispatchOutcome.COMPLETED
 
 
+# --- Prompt A7 progress_registry extension -----------------------------------
+
+
+def test_progress_registry_none_behaves_exactly_as_before():
+    queue, entry, tasks, requests = _setup()
+    acquisition = FakeAcquisitionService(_completed_download())
+    coordinator = DispatchCoordinator(acquisition_service=acquisition)
+    candidate = DispatchCandidate(queue_entry_id=entry.queue_entry_id, task_id="task-1")
+
+    result = coordinator.dispatch(
+        candidate, queue=queue, tasks=tasks, requests=requests, now=T0, progress_registry=None
+    )
+    assert result.outcome == DispatchOutcome.COMPLETED
+
+
+def test_progress_registry_receives_telemetry_bound_to_attempt():
+    from rychlik.core.progress import ProgressRegistry
+
+    queue, entry, tasks, requests = _setup()
+
+    def _outcome(request):
+        return _completed_download()
+
+    acquisition = FakeAcquisitionService(_outcome)
+    # Wrap acquire to also emit a progress callback, like a real backend would.
+    original_acquire = acquisition.acquire
+
+    def _acquire_with_progress(request, *, progress_callback=None, cancel_event=None):
+        if progress_callback is not None:
+            progress_callback(50, 100)
+        return original_acquire(request, progress_callback=progress_callback, cancel_event=cancel_event)
+
+    acquisition.acquire = _acquire_with_progress
+    coordinator = DispatchCoordinator(acquisition_service=acquisition)
+    candidate = DispatchCandidate(queue_entry_id=entry.queue_entry_id, task_id="task-1")
+    registry = ProgressRegistry()
+
+    coordinator.dispatch(
+        candidate, queue=queue, tasks=tasks, requests=requests, now=T0, progress_registry=registry
+    )
+
+    snap = registry.snapshot(entry.queue_entry_id)
+    assert snap is not None
+    assert snap.bytes_downloaded == 50
+    assert snap.total_bytes == 100
+    assert snap.attempt_number == 1  # matches DownloadTask.attempt_count after start_transfer()
+
+
+def test_progress_registry_composes_with_user_progress_callback():
+    from rychlik.core.progress import ProgressRegistry
+
+    queue, entry, tasks, requests = _setup()
+    user_calls = []
+
+    def _outcome(request):
+        return _completed_download()
+
+    acquisition = FakeAcquisitionService(_outcome)
+    original_acquire = acquisition.acquire
+
+    def _acquire_with_progress(request, *, progress_callback=None, cancel_event=None):
+        if progress_callback is not None:
+            progress_callback(10, 20)
+        return original_acquire(request, progress_callback=progress_callback, cancel_event=cancel_event)
+
+    acquisition.acquire = _acquire_with_progress
+    coordinator = DispatchCoordinator(acquisition_service=acquisition)
+    candidate = DispatchCandidate(queue_entry_id=entry.queue_entry_id, task_id="task-1")
+    registry = ProgressRegistry()
+
+    coordinator.dispatch(
+        candidate,
+        queue=queue,
+        tasks=tasks,
+        requests=requests,
+        now=T0,
+        progress_registry=registry,
+        progress_callback=lambda bd, tb=None: user_calls.append((bd, tb)),
+    )
+
+    assert user_calls == [(10, 20)]
+    assert registry.snapshot(entry.queue_entry_id).bytes_downloaded == 10
+
+
 def test_module_has_no_forbidden_imports():
     import ast
 
