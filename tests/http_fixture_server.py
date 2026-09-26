@@ -61,6 +61,22 @@ class _Handler(BaseHTTPRequestHandler):
             with server.track_lock:
                 server.active_count -= 1
             self._send_body(200, NORMAL_BODY, content_type="video/mp4")
+        elif self.path.startswith("/flaky/"):
+            # Real transient-failure proof for Prompt A6: fails deterministically
+            # for the first N requests under a given key, then succeeds -- no
+            # mock network in the retry E2E tests that use this.
+            key = self.path[len("/flaky/") :]
+            server = self.server
+            with server.flaky_lock:
+                server.flaky_counts[key] = server.flaky_counts.get(key, 0) + 1
+                count = server.flaky_counts[key]
+                fail_until = server.flaky_fail_until.get(key, 1)
+            if count <= fail_until:
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self._send_body(200, NORMAL_BODY, content_type="video/mp4")
         else:
             self.send_response(404)
             self.end_headers()
@@ -80,6 +96,9 @@ class HttpFixtureServer:
         self._server.track_lock = threading.Lock()
         self._server.active_count = 0
         self._server.max_observed_active = 0
+        self._server.flaky_lock = threading.Lock()
+        self._server.flaky_counts = {}
+        self._server.flaky_fail_until = {}
 
     @property
     def base_url(self) -> str:
@@ -97,6 +116,18 @@ class HttpFixtureServer:
         with self._server.track_lock:
             self._server.active_count = 0
             self._server.max_observed_active = 0
+
+    def configure_flaky(self, key: str, *, fail_until: int) -> None:
+        """Requests 1..fail_until to /flaky/<key> return 503; request
+        fail_until+1 onward return 200. Use a fresh, test-unique `key` (the
+        server is session-scoped) to avoid cross-test contamination."""
+        with self._server.flaky_lock:
+            self._server.flaky_counts[key] = 0
+            self._server.flaky_fail_until[key] = fail_until
+
+    def flaky_call_count(self, key: str) -> int:
+        with self._server.flaky_lock:
+            return self._server.flaky_counts.get(key, 0)
 
     def start(self) -> "HttpFixtureServer":
         self._thread.start()
