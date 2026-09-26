@@ -530,6 +530,105 @@ def test_queue_pause_composition():
 # --- structural import test (§73) ---------------------------------------------------
 
 
+# --- Prompt A5 lock extension (§78) ---------------------------------------------
+
+
+def test_acquisition_executes_outside_lock():
+    """While a worker is blocked inside acquire(), another thread must be
+    able to acquire the shared state lock -- proving the lock is released
+    for the real network I/O and only guards the domain-mutation phases."""
+    import threading
+
+    queue, entry, tasks, requests = _setup()
+    lock = threading.RLock()
+    entered_acquire = threading.Event()
+    release_acquire = threading.Event()
+
+    def _blocking_outcome(request):
+        entered_acquire.set()
+        release_acquire.wait(timeout=5)
+        return _completed_download()
+
+    acquisition = FakeAcquisitionService(_blocking_outcome)
+    coordinator = DispatchCoordinator(acquisition_service=acquisition)
+    candidate = DispatchCandidate(queue_entry_id=entry.queue_entry_id, task_id="task-1")
+
+    result_holder = {}
+
+    def _run_dispatch():
+        result_holder["result"] = coordinator.dispatch(
+            candidate, queue=queue, tasks=tasks, requests=requests, now=T0, lock=lock
+        )
+
+    worker_thread = threading.Thread(target=_run_dispatch)
+    worker_thread.start()
+
+    assert entered_acquire.wait(timeout=5)  # worker is now blocked inside acquire()
+
+    # The lock must be free right now -- acquire it with a short timeout.
+    acquired = lock.acquire(timeout=2)
+    assert acquired, "state lock was held across the network acquisition call"
+    lock.release()
+
+    release_acquire.set()
+    worker_thread.join(timeout=5)
+
+    assert result_holder["result"].outcome == DispatchOutcome.COMPLETED
+
+
+def test_prepare_and_finalize_run_under_lock():
+    """The prepare (revalidate+start_transfer) phase must complete under the
+    lock: assert task is already TRANSFERRING as soon as dispatch acquires
+    and releases the lock the first time (observed via a lock subclass)."""
+    import threading
+
+    queue, entry, tasks, requests = _setup()
+
+    class ObservingLock:
+        def __init__(self):
+            self._lock = threading.RLock()
+            self.observed_task_states_on_release = []
+
+        def __enter__(self):
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, *exc_info):
+            # Observe state just before releasing -- proves the mutation
+            # already happened while still holding the lock.
+            state = tasks.get("task-1")
+            self.observed_task_states_on_release.append(state.state if state else None)
+            self._lock.release()
+            return False
+
+    observing_lock = ObservingLock()
+    acquisition = FakeAcquisitionService(_completed_download())
+    coordinator = DispatchCoordinator(acquisition_service=acquisition)
+    candidate = DispatchCandidate(queue_entry_id=entry.queue_entry_id, task_id="task-1")
+
+    coordinator.dispatch(
+        candidate, queue=queue, tasks=tasks, requests=requests, now=T0, lock=observing_lock
+    )
+
+    # First locked section (prepare): task already TRANSFERRING on release.
+    assert observing_lock.observed_task_states_on_release[0] == DownloadTaskState.TRANSFERRING
+    # Second locked section (finalize): task already COMPLETED on release.
+    assert observing_lock.observed_task_states_on_release[1] == DownloadTaskState.COMPLETED
+
+
+def test_no_lock_behaves_exactly_as_before():
+    queue, entry, tasks, requests = _setup()
+    acquisition = FakeAcquisitionService(_completed_download())
+    coordinator = DispatchCoordinator(acquisition_service=acquisition)
+    candidate = DispatchCandidate(queue_entry_id=entry.queue_entry_id, task_id="task-1")
+
+    result = coordinator.dispatch(
+        candidate, queue=queue, tasks=tasks, requests=requests, now=T0, lock=None
+    )
+
+    assert result.outcome == DispatchOutcome.COMPLETED
+
+
 def test_module_has_no_forbidden_imports():
     import ast
 

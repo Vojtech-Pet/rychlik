@@ -97,13 +97,36 @@ class SchedulerPolicy:
         queue: DownloadQueue,
         tasks: Mapping[str, DownloadTask],
         config: SchedulerConfig,
+        reserved_queue_entry_ids: frozenset[str] = frozenset(),
     ) -> DispatchPlan:
+        """`reserved_queue_entry_ids` is a Prompt A5 runtime-concurrency
+        extension: an empty (default) set preserves all Prompt A3 behavior
+        exactly. It exists to close the race between a candidate being
+        selected and its worker actually transitioning the task to
+        TRANSFERRING -- see docs/CONCURRENT_DOWNLOAD_RUNTIME.md. Reserved
+        entries are excluded from `selected` even if still QUEUED+READY, and
+        (if not yet reflected as TRANSFERRING) count toward occupied
+        capacity so a second worker cannot be over-submitted for the same
+        slot. `active_transfer_count` on the returned plan is UNCHANGED
+        semantics: it always reports only TRANSFERRING tasks, never
+        reservations -- reservations only affect `available_slots_*`."""
         self._validate_snapshot(queue, tasks)
 
         active_transfer_count = sum(
             1 for task in tasks.values() if task.state == DownloadTaskState.TRANSFERRING
         )
-        available_slots = max(0, config.max_active_transfers - active_transfer_count)
+
+        # A reservation whose task has not yet become TRANSFERRING still
+        # occupies a future slot; once the worker actually transitions it,
+        # it's already counted above and must not be double-counted here.
+        reserved_pending_task_ids = {
+            entry.task_id
+            for entry in queue.active_entries()
+            if entry.queue_entry_id in reserved_queue_entry_ids
+            and tasks[entry.task_id].state != DownloadTaskState.TRANSFERRING
+        }
+        occupied = active_transfer_count + len(reserved_pending_task_ids)
+        available_slots = max(0, config.max_active_transfers - occupied)
 
         # Ordering authority is entirely A1's: eligible_entries() is already
         # QUEUED-only, in canonical (priority, then manual/stable position)
@@ -111,7 +134,8 @@ class SchedulerPolicy:
         candidates = [
             DispatchCandidate(queue_entry_id=entry.queue_entry_id, task_id=entry.task_id)
             for entry in queue.eligible_entries()
-            if tasks[entry.task_id].state == DownloadTaskState.READY
+            if entry.queue_entry_id not in reserved_queue_entry_ids
+            and tasks[entry.task_id].state == DownloadTaskState.READY
         ]
 
         selected = tuple(candidates[:available_slots])

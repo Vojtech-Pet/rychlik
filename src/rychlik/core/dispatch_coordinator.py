@@ -34,10 +34,11 @@ introduced.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Callable, Mapping, MutableMapping
+from typing import Callable, ContextManager, Mapping, MutableMapping
 
 from rychlik.acquisition.acquisition_service import AcquisitionService
 from rychlik.acquisition.contracts import (
@@ -125,7 +126,99 @@ class DispatchCoordinator:
         now: datetime,
         progress_callback=None,
         cancel_event=None,
+        lock: ContextManager | None = None,
     ) -> DispatchExecutionResult:
+        """`lock` is a Prompt A5 concurrency extension (§23/§24): an
+        optional context manager (e.g. a shared `threading.RLock`) guarding
+        only the two domain-mutation phases -- last-moment revalidation +
+        start_transfer(), and terminal finalization + queue cleanup. The
+        AcquisitionService network call always runs with the lock released,
+        so one worker blocked on I/O can never prevent another thread from
+        planning or finalizing. `lock=None` (the default) behaves exactly as
+        in Prompt A4 -- no synchronization overhead, fully backward
+        compatible with every existing synchronous caller/test."""
+
+        def _locked() -> ContextManager:
+            return lock if lock is not None else contextlib.nullcontext()
+
+        with _locked():
+            prepared = self._prepare(candidate, queue=queue, tasks=tasks, requests=requests, now=now)
+        if isinstance(prepared, DispatchExecutionResult):
+            return prepared  # STALE, decided entirely under the lock
+        task, request = prepared
+
+        try:
+            completed = self._acquisition_service.acquire(
+                request, progress_callback=progress_callback, cancel_event=cancel_event
+            )
+        except DownloadCancelled:
+            with _locked():
+                task = task.cancel(now=now)
+                tasks[candidate.task_id] = task
+                queue.remove(candidate.queue_entry_id, now=now)
+            return DispatchExecutionResult(
+                candidate.queue_entry_id, candidate.task_id, DispatchOutcome.CANCELLED
+            )
+        except AcquisitionError as exc:
+            failure = self._failure_mapper(exc)
+            if failure.retryable:
+                with _locked():
+                    task = task.wait_for_retry(failure, now=now)
+                    tasks[candidate.task_id] = task
+                # QueueEntry deliberately stays QUEUED (§16/§18): candidate
+                # eligibility already requires Task READY, so a RETRY_WAIT
+                # task cannot be re-dispatched, and priority/position survive
+                # for whenever mark_retry_ready() is called externally.
+                return DispatchExecutionResult(
+                    candidate.queue_entry_id,
+                    candidate.task_id,
+                    DispatchOutcome.RETRY_WAIT,
+                    failure=failure,
+                )
+            with _locked():
+                task = task.fail(failure, now=now)
+                tasks[candidate.task_id] = task
+                queue.remove(candidate.queue_entry_id, now=now)
+            return DispatchExecutionResult(
+                candidate.queue_entry_id, candidate.task_id, DispatchOutcome.FAILED, failure=failure
+            )
+        except Exception as exc:
+            # Unexpected programming/runtime error (§29/§30): never leave the
+            # task TRANSFERRING, never store the raw exception in the domain.
+            failure = DownloadTaskFailure(
+                code="ACQUISITION_RUNTIME_ERROR", message=str(exc), retryable=False
+            )
+            with _locked():
+                task = task.fail(failure, now=now)
+                tasks[candidate.task_id] = task
+                queue.remove(candidate.queue_entry_id, now=now)
+            raise DispatchExecutionError(
+                f"unexpected error during acquisition for task {candidate.task_id!r}"
+            ) from exc
+
+        with _locked():
+            task = task.complete(now=now)
+            tasks[candidate.task_id] = task
+            queue.remove(candidate.queue_entry_id, now=now)
+        return DispatchExecutionResult(
+            candidate.queue_entry_id,
+            candidate.task_id,
+            DispatchOutcome.COMPLETED,
+            completed_download=completed,
+        )
+
+    def _prepare(
+        self,
+        candidate: DispatchCandidate,
+        *,
+        queue: DownloadQueue,
+        tasks: MutableMapping[str, DownloadTask],
+        requests: Mapping[str, DownloadRequest],
+        now: datetime,
+    ) -> DispatchExecutionResult | tuple[DownloadTask, DownloadRequest]:
+        """Runs entirely under the caller's lock (if any): resolve + revalidate
+        + start_transfer(). Returns either a STALE result or a (task, request)
+        pair ready for the (unlocked) acquisition call."""
         try:
             entry = queue.get(candidate.queue_entry_id)
         except UnknownQueueEntryError as exc:
@@ -160,66 +253,14 @@ class DispatchCoordinator:
         try:
             task = task.start_transfer(now=now)
         except Exception:
-            # Defensive only: in this synchronous, single-threaded coordinator
-            # the READY check above and this call cannot actually diverge, but
-            # a future concurrent caller must not partially execute (§31).
+            # Defensive only: in this synchronous coordinator the READY check
+            # above and this call cannot actually diverge without the lock
+            # being released in between, but a future caller must not
+            # partially execute (§31).
             return self._stale(candidate, "task state changed before start_transfer")
         tasks[candidate.task_id] = task
 
-        try:
-            completed = self._acquisition_service.acquire(
-                request, progress_callback=progress_callback, cancel_event=cancel_event
-            )
-        except DownloadCancelled:
-            task = task.cancel(now=now)
-            tasks[candidate.task_id] = task
-            queue.remove(candidate.queue_entry_id, now=now)
-            return DispatchExecutionResult(
-                candidate.queue_entry_id, candidate.task_id, DispatchOutcome.CANCELLED
-            )
-        except AcquisitionError as exc:
-            failure = self._failure_mapper(exc)
-            if failure.retryable:
-                task = task.wait_for_retry(failure, now=now)
-                tasks[candidate.task_id] = task
-                # QueueEntry deliberately stays QUEUED (§16/§18): candidate
-                # eligibility already requires Task READY, so a RETRY_WAIT
-                # task cannot be re-dispatched, and priority/position survive
-                # for whenever mark_retry_ready() is called externally.
-                return DispatchExecutionResult(
-                    candidate.queue_entry_id,
-                    candidate.task_id,
-                    DispatchOutcome.RETRY_WAIT,
-                    failure=failure,
-                )
-            task = task.fail(failure, now=now)
-            tasks[candidate.task_id] = task
-            queue.remove(candidate.queue_entry_id, now=now)
-            return DispatchExecutionResult(
-                candidate.queue_entry_id, candidate.task_id, DispatchOutcome.FAILED, failure=failure
-            )
-        except Exception as exc:
-            # Unexpected programming/runtime error (§29/§30): never leave the
-            # task TRANSFERRING, never store the raw exception in the domain.
-            failure = DownloadTaskFailure(
-                code="ACQUISITION_RUNTIME_ERROR", message=str(exc), retryable=False
-            )
-            task = task.fail(failure, now=now)
-            tasks[candidate.task_id] = task
-            queue.remove(candidate.queue_entry_id, now=now)
-            raise DispatchExecutionError(
-                f"unexpected error during acquisition for task {candidate.task_id!r}"
-            ) from exc
-
-        task = task.complete(now=now)
-        tasks[candidate.task_id] = task
-        queue.remove(candidate.queue_entry_id, now=now)
-        return DispatchExecutionResult(
-            candidate.queue_entry_id,
-            candidate.task_id,
-            DispatchOutcome.COMPLETED,
-            completed_download=completed,
-        )
+        return task, request
 
     @staticmethod
     def _stale(candidate: DispatchCandidate, detail: str) -> DispatchExecutionResult:

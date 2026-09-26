@@ -439,6 +439,74 @@ def test_complex_scenario():
     assert "N3" not in selected_ids  # excluded by task RETRY_WAIT
 
 
+# --- Prompt A5 reservation extension (§77) ----------------------------------------------
+
+
+def test_empty_reservation_set_preserves_old_behavior():
+    queue = _queue()
+    queue.enqueue("A")
+    queue.enqueue("B")
+    tasks = {"A": _ready_task("A"), "B": _ready_task("B")}
+
+    plan = SchedulerPolicy().plan(
+        queue=queue, tasks=tasks, config=_config(2), reserved_queue_entry_ids=frozenset()
+    )
+
+    assert _selected_task_ids(plan) == ["A", "B"]
+
+
+def test_reserved_ready_entry_excluded_from_selection():
+    queue = _queue()
+    a = queue.enqueue("A")
+    queue.enqueue("B")
+    tasks = {"A": _ready_task("A"), "B": _ready_task("B")}
+
+    plan = SchedulerPolicy().plan(
+        queue=queue,
+        tasks=tasks,
+        config=_config(2),
+        reserved_queue_entry_ids=frozenset({a.queue_entry_id}),
+    )
+
+    assert _selected_task_ids(plan) == ["B"]
+
+
+def test_reserved_pending_entry_reduces_available_capacity():
+    queue = _queue()
+    a = queue.enqueue("A")
+    queue.enqueue("B")
+    tasks = {"A": _ready_task("A"), "B": _ready_task("B")}
+
+    plan = SchedulerPolicy().plan(
+        queue=queue,
+        tasks=tasks,
+        config=_config(1),
+        reserved_queue_entry_ids=frozenset({a.queue_entry_id}),
+    )
+
+    assert plan.available_slots_before_selection == 0
+    assert plan.selected == ()
+
+
+def test_reserved_transferring_entry_not_double_counted():
+    queue = _queue()
+    a = queue.enqueue("A")
+    queue.enqueue("B")
+    tasks = {"A": _transferring_task("A"), "B": _ready_task("B")}
+
+    # A is reserved AND already TRANSFERRING -- must count once, not twice.
+    plan = SchedulerPolicy().plan(
+        queue=queue,
+        tasks=tasks,
+        config=_config(2),
+        reserved_queue_entry_ids=frozenset({a.queue_entry_id}),
+    )
+
+    assert plan.active_transfer_count == 1  # unchanged semantics: TRANSFERRING count only
+    assert plan.available_slots_before_selection == 1
+    assert _selected_task_ids(plan) == ["B"]
+
+
 # --- structural dependencies (§45) ----------------------------------------------------
 
 

@@ -47,6 +47,20 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(NORMAL_BODY)))
             self.end_headers()
             self.wfile.write(NORMAL_BODY)
+        elif self.path == "/track":
+            # Real-concurrency proof for Prompt A5: increments a shared
+            # active-request counter, holds briefly, decrements. The test
+            # process reads HttpFixtureServer.max_observed_active directly
+            # (same process, no extra HTTP round trip needed) instead of
+            # guessing overlap from wall-clock timing.
+            server = self.server
+            with server.track_lock:
+                server.active_count += 1
+                server.max_observed_active = max(server.max_observed_active, server.active_count)
+            time.sleep(0.3)
+            with server.track_lock:
+                server.active_count -= 1
+            self._send_body(200, NORMAL_BODY, content_type="video/mp4")
         else:
             self.send_response(404)
             self.end_headers()
@@ -63,11 +77,26 @@ class HttpFixtureServer:
     def __init__(self) -> None:
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._server.track_lock = threading.Lock()
+        self._server.active_count = 0
+        self._server.max_observed_active = 0
 
     @property
     def base_url(self) -> str:
         host, port = self._server.server_address[:2]
         return f"http://{host}:{port}"
+
+    @property
+    def max_observed_active(self) -> int:
+        with self._server.track_lock:
+            return self._server.max_observed_active
+
+    def reset_track(self) -> None:
+        """The fixture server is session-scoped; call this before each test
+        that reads max_observed_active to avoid cross-test contamination."""
+        with self._server.track_lock:
+            self._server.active_count = 0
+            self._server.max_observed_active = 0
 
     def start(self) -> "HttpFixtureServer":
         self._thread.start()
