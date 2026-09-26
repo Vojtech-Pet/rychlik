@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from rychlik.core.artifact import Artifact
+from rychlik.core.artifact_integrity import ArtifactChanged, resolve_artifact_file
 from rychlik.core.artifact_repository import ArtifactRepository
 from rychlik.share.contracts import ShareStatus
 from rychlik.share.range_parser import RangeOutcome, parse_range
@@ -38,22 +38,6 @@ _DENIED_STATUS_CODES: dict[ShareStatus, int] = {
     ShareStatus.REVOKED: HTTPStatus.GONE,
     ShareStatus.FAILED: HTTPStatus.NOT_FOUND,
 }
-
-
-class ArtifactChanged(Exception):
-    """Raised internally when the on-disk file no longer matches the Artifact."""
-
-
-def _resolve_artifact_file(artifact: Artifact) -> Path:
-    """Symlink policy: resolve once, require a regular file. Not TOCTOU-proof
-    (no filesystem read is transactional); see docs for the exact guarantee."""
-    resolved = artifact.local_path.resolve(strict=True)
-    if not resolved.is_file():
-        raise ArtifactChanged("resolved path is not a regular file")
-    size = resolved.stat().st_size
-    if size != artifact.size:
-        raise ArtifactChanged(f"size mismatch: expected {artifact.size}, found {size}")
-    return resolved
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -95,7 +79,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            resolved_path = _resolve_artifact_file(artifact)
+            resolved_path = resolve_artifact_file(artifact)
         except (FileNotFoundError, ArtifactChanged) as exc:
             self._empty_response(HTTPStatus.GONE, share_id=share_id, result=f"artifact_changed:{exc}")
             return
