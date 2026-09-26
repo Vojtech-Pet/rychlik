@@ -440,6 +440,21 @@ class LocalShareOrigin:
         host, port = self.address
         return PublicUrlBuilder(f"http://{host}:{port}")
 
+    def set_base_url(self, base_url: str | None) -> None:
+        """Point og:url/og:image/media links at a public tunnel URL discovered
+        after start() (the public URL from DevelopmentTunnelProvider is only
+        known after the local origin is already bound and the tunnel has
+        connected). Pass None to revert to the local 127.0.0.1:<port> default.
+
+        Found via Prompt 13's live WhatsApp experiment: without this, a
+        share page correctly reachable at a public tunnel URL still emits
+        og:image/og:url pointing at 127.0.0.1, which is unreachable from
+        outside this machine -- the crawler fetches the HTML successfully
+        but silently fails to fetch the (unreachable) image and falls back
+        to a bare-domain card. See docs/WHATSAPP_LINK_PREVIEW_RESULT.md.
+        """
+        self._base_url_override = base_url
+
     def start(self) -> None:
         with self._lock:
             if self._server is not None:

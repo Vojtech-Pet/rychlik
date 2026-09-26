@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -11,6 +12,18 @@ from rychlik.share.share_link_repository import InMemoryShareLinkRepository
 from rychlik.share.share_preview_service import SharePreviewService
 
 UTC_NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _wait_for_log(origin, expected_length, *, timeout=2.0):
+    # _record() runs after the response is already sent, so the client can
+    # observe completion slightly before the log entry is appended.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        log = origin.request_log
+        if len(log) >= expected_length:
+            return log
+        time.sleep(0.02)
+    return origin.request_log
 
 
 def _origin(tmp_path):
@@ -44,7 +57,7 @@ def test_request_log_records_route_method_status_and_user_agent(tmp_path):
         requests.get(origin.share_page_url(link.share_id), headers={"User-Agent": "TestAgent/1.0"})
         requests.get(origin.media_url(link.share_id), headers={"Range": "bytes=0-9", "User-Agent": "TestAgent/1.0"})
 
-        log = origin.request_log
+        log = _wait_for_log(origin, 2)
         assert len(log) == 2
         page_entry, media_entry = log
 
@@ -81,7 +94,7 @@ def test_request_log_records_denied_and_unknown_requests(tmp_path):
         requests.get(origin.media_url("does-not-exist"))
         requests.get(f"http://{origin.address[0]}:{origin.address[1]}/nonsense")
 
-        log = origin.request_log
+        log = _wait_for_log(origin, 2)
         assert log[0].route == "media"
         assert log[0].http_status == 404
         assert log[0].result == "unknown_share"

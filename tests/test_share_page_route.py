@@ -329,3 +329,52 @@ def test_crawler_style_requests_have_no_side_effects(fx):
 
     link = fx.share_link_repository.get(share_id)
     assert link.status == ShareStatus.ACTIVE  # unchanged by any of the crawler-style requests
+
+
+# --- set_base_url (Prompt 13 bug found via live WhatsApp experiment) --------
+
+
+def test_default_base_url_is_local_address(fx):
+    artifact = fx.add_artifact("clip.mp4", b"x" * 50)
+    share_id = fx.add_link(artifact)
+
+    response = requests.get(fx.origin.share_page_url(share_id))
+
+    host, port = fx.origin.address
+    assert f'og:url" content="http://{host}:{port}/s/{share_id}"' in response.text
+    assert f'src="http://{host}:{port}/media/{share_id}"' in response.text
+
+
+def test_set_base_url_overrides_og_urls(fx):
+    artifact = fx.add_artifact("clip.mp4", b"x" * 50)
+    share_id = fx.add_link(artifact)
+    host, port = fx.origin.address
+    local_page_url = f"http://{host}:{port}/s/{share_id}"
+
+    fx.origin.set_base_url("https://public-tunnel.example")
+    response = requests.get(local_page_url)  # request the real local socket; only rendered URLs change
+
+    assert f'og:url" content="https://public-tunnel.example/s/{share_id}"' in response.text
+    assert f'src="https://public-tunnel.example/media/{share_id}"' in response.text
+    assert "127.0.0.1" not in response.text
+
+
+def test_set_base_url_also_changes_route_helper_methods(fx):
+    artifact = fx.add_artifact("clip.mp4", b"x" * 50)
+    share_id = fx.add_link(artifact)
+
+    fx.origin.set_base_url("https://public-tunnel.example")
+
+    assert fx.origin.share_page_url(share_id) == f"https://public-tunnel.example/s/{share_id}"
+    assert fx.origin.media_url(share_id) == f"https://public-tunnel.example/media/{share_id}"
+
+
+def test_set_base_url_none_reverts_to_local_default(fx):
+    artifact = fx.add_artifact("clip.mp4", b"x" * 50)
+    share_id = fx.add_link(artifact)
+    host, port = fx.origin.address
+
+    fx.origin.set_base_url("https://public-tunnel.example")
+    fx.origin.set_base_url(None)
+
+    assert fx.origin.share_page_url(share_id) == f"http://{host}:{port}/s/{share_id}"
