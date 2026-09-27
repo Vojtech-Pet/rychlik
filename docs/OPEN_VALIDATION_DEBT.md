@@ -68,6 +68,40 @@ resulting real HTTP request carries `Range: bytes=<durable_bytes>-` (not
 
 ---
 
+## A13-PRODUCTION-SECURE-CHANNEL
+
+**Status:** OPEN
+**Blocking A13 foundation:** NO
+**Blocking real LAN beta:** YES
+
+**Description:** Prompt A13's `HttpFriendSendTransport` (the real, non-mock
+Device Mode transport) is plain HTTP plus a bearer-style auth token
+established during pairing. It is explicitly labeled EXPERIMENTAL/TEST
+TRANSPORT (see `docs/DEVICE_MODE_FOUNDATION.md`, "Security boundary").
+There is no TLS, no certificate pinning, no Noise-protocol-grade
+authenticated encryption, and no pairing-derived session key. An auth
+token observed on an untrusted local network (e.g. via ARP spoofing or a
+compromised device on the same LAN) could impersonate a paired device for
+the lifetime of that token.
+
+**Why not closed during A13:** deliberately deferred per the prompt's own
+guidance (§35-37) — final network security choices (TLS/mTLS/Noise/
+pairing-derived keys) are explicitly deferred until a real Android
+FriendSend peer exists (A14), since designing the final secure channel
+without a real second implementation to validate it against risks freezing
+the wrong contract. A13's job was to prove the handoff *protocol*
+(versioning, capability negotiation, integrity, cancellation, truthful
+acknowledgement), not to ship a production-secure transport.
+
+**What would close it:** a real authenticated, encrypted channel (e.g.
+mutual TLS with pairing-derived certificate trust, or an equivalent
+Noise-protocol handshake) implemented and verified against a real second
+peer (the Android app from A14), with a test proving an attacker
+observing the wire cannot replay a captured auth token from a different
+network position/session.
+
+---
+
 *(Future validation debt items should be appended below, each with the
 same Status/Blocking/Description/Why-not-closed/What-would-close-it
 shape.)*
