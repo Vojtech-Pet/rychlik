@@ -204,6 +204,11 @@ class ConcurrentDownloadRuntime:
         # on restart; the task simply stays PAUSED and can be resumed again.
         self._pause_events: dict[str, threading.Event] = {}
         self._resume_requested: set[str] = set()
+        # Prompt A10: cancel_event has existed on the acquisition contract
+        # since Prompt 04.5 and every AcquisitionService test double already
+        # declares it, so (unlike pause_event) this is populated
+        # unconditionally -- no enable_pause_resume gate needed.
+        self._cancel_events: dict[str, threading.Event] = {}
 
         self._completions: list[WorkerCompletion] = []
         self._completions_lock = threading.Lock()
@@ -313,6 +318,50 @@ class ConcurrentDownloadRuntime:
         with self._state_lock:
             self._resume_requested.add(queue_entry_id)
         self.notify_state_changed()
+
+    def discard_resume_request(self, queue_entry_id: str) -> None:
+        """Prompt A10: lets a higher-level facade withdraw a pending resume
+        intent (e.g. because the occurrence is being cancelled) without
+        reaching into the private `_resume_requested` set directly."""
+        with self._state_lock:
+            self._resume_requested.discard(queue_entry_id)
+
+    def request_cancel(self, queue_entry_id: str) -> bool:
+        """Prompt A10: sets the in-flight transfer's cancel_event so the
+        worker's normal DownloadCancelled path (already present since
+        Prompt 04.5) runs on its own next chunk check -- cooperative,
+        cancel always wins over a simultaneous pause (see
+        DirectHttpAcquisition's own chunk loop, which checks cancel_event
+        before pause_event). Returns False for any occurrence with no
+        in-flight worker (nothing to cooperatively cancel this way --
+        callers use the synchronous DownloadTask.cancel() path instead for
+        non-active states)."""
+        with self._state_lock:
+            event = self._cancel_events.get(queue_entry_id)
+            if event is None:
+                return False
+            event.set()
+            return True
+
+    def discard_retry_schedule(self, queue_entry_id: str) -> None:
+        """Prompt A10: lets a higher-level facade remove a pending
+        in-memory retry deadline (e.g. after retry_now() already promoted
+        the task to READY) so the controller's next _process_due_retries_
+        locked() pass does not also try to act on it. A stale/missing entry
+        is a safe no-op."""
+        with self._state_lock:
+            self._retry_schedule.pop(queue_entry_id, None)
+
+    @property
+    def state_lock(self) -> threading.RLock:
+        """Public specifically for higher-level application-service
+        composition (Prompt A10) that must synchronize its own
+        queue/task mutations with this runtime's controller/worker
+        threads using the SAME lock -- no code above that facade should
+        ever need this directly. Reentrant (RLock), so a facade command
+        may safely call back into e.g. checkpoint_task() while already
+        holding it."""
+        return self._state_lock
 
     # --- completion observation (§39/§40) ----------------------------------
 
@@ -627,6 +676,7 @@ class ConcurrentDownloadRuntime:
             self._resume_requested.discard(candidate.queue_entry_id)
         if self._enable_pause_resume:
             self._pause_events[candidate.queue_entry_id] = threading.Event()
+        self._cancel_events[candidate.queue_entry_id] = threading.Event()
         future = self._executor.submit(self._run_worker, candidate)
         self._in_flight[candidate.queue_entry_id] = _InFlight(
             task_id=candidate.task_id, candidate=candidate, future=future
@@ -641,6 +691,7 @@ class ConcurrentDownloadRuntime:
         result: DispatchExecutionResult | None = None
         error: str | None = None
         pause_event = self._pause_events.get(candidate.queue_entry_id)
+        cancel_event = self._cancel_events.get(candidate.queue_entry_id)
         try:
             result = self._coordinator.dispatch(
                 candidate,
@@ -650,6 +701,7 @@ class ConcurrentDownloadRuntime:
                 now=self._clock(),
                 lock=self._state_lock,
                 progress_registry=self._progress_registry,
+                cancel_event=cancel_event,
                 checkpoint=(
                     (lambda: self._checkpoint_dispatch_locked(candidate))
                     if self._state_store is not None
@@ -679,6 +731,7 @@ class ConcurrentDownloadRuntime:
             with self._state_lock:
                 self._in_flight.pop(candidate.queue_entry_id, None)
                 self._pause_events.pop(candidate.queue_entry_id, None)
+                self._cancel_events.pop(candidate.queue_entry_id, None)
             with self._completions_lock:
                 self._completions.append(
                     WorkerCompletion(
