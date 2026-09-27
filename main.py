@@ -1,6 +1,6 @@
-"""Minimal entry point: opens the existing DownloadWidget skeleton in a
-plain QMainWindow. Functional skeleton only -- no final visual design,
-no menu/toolbar/sidebar (that starts only after Prompt 32's design gate)."""
+"""Entry point: DownloadManagerService (A10) backing a functional
+DownloadManagerWidget (A11). Functional GUI integration only -- no final
+visual design (see docs/FUNCTIONAL_GUI_INTEGRATION.md)."""
 
 from __future__ import annotations
 
@@ -9,19 +9,42 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
-from rychlik.gui.download_widget import DownloadWidget
+from rychlik.core.download_manager_service import DownloadManagerService, ManagerFaultedError
+from rychlik.gui.download_manager_widget import DownloadManagerWidget
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, manager: DownloadManagerService, widget: DownloadManagerWidget) -> None:
+        super().__init__()
+        self._manager = manager
+        self._widget = widget
+        self.setWindowTitle("Rýchlik")
+        self.setCentralWidget(widget)
+        self.resize(900, 480)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        # §12/§13: GUI never manipulates clean-shutdown metadata itself --
+        # manager.stop() alone owns the correct A8/A9 shutdown ordering.
+        self._widget.shutdown()
+        self._manager.stop()
+        event.accept()
 
 
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Rýchlik")
 
-    window = QMainWindow()
-    window.setWindowTitle("Rýchlik")
-    window.setCentralWidget(DownloadWidget())
-    window.resize(480, 200)
+    manager = DownloadManagerService()
+    try:
+        manager.start()
+    except (ManagerFaultedError, Exception) as exc:  # noqa: BLE001
+        QMessageBox.critical(None, "Rýchlik", f"Failed to start the download manager:\n{exc}")
+        return 1
+
+    widget = DownloadManagerWidget(manager)
+    window = MainWindow(manager, widget)
     window.show()
 
     return app.exec()
