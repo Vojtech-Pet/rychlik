@@ -1,0 +1,19 @@
+{
+  "inputs": {
+    "security_profile": "pinned-tls-signature-v1",
+    "protocol_version": 1,
+    "desktop_instance_id": "desktop-0001",
+    "device_id": "device-0001",
+    "challenge_id": "challenge-0001",
+    "challenge_nonce_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+    "handoff_id": "handoff-0001",
+    "artifact_sha256_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "artifact_size_bytes": 123456
+  },
+  "expected_signature_input_hex": "0000001770696e6e65642d746c732d7369676e61747572652d763100000001310000000c6465736b746f702d303030310000000b6465766963652d303030310000000e6368616c6c656e67652d3030303100000020808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f0000000c68616e646f66662d3030303100000020a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf00000006313233343536",
+  "expected_signature_input_length": 179,
+  "ed25519_private_key_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "ed25519_public_key_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  "expected_signature_hex": "16330b9f16637c5d797423c130c2c6e31b5db74a30d00413344cab234162983918ac6309a0b09b0b6059ad2f092e59f0608615274ff5d871f37b38bc72bfbc0f",
+  "note": "Ed25519 signature over expected_signature_input using the private key derived from the 32-byte seed. Both Python (cryptography.Ed25519PrivateKey.from_private_bytes) and Dart (package:cryptography Ed25519.newKeyPairFromSeed) must produce this exact signature and both must verify it against the public key."
+}

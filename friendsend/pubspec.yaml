@@ -47,6 +47,21 @@ dependencies:
   # language test harness, Prompt A14 §96).
   args: ^2.6.0
 
+  # Ed25519 verification of desktop auth signatures, and HMAC-SHA256 for
+  # the pairing transcript proof (Prompt A15).
+  cryptography: ^2.7.0
+
+  # Self-signed ECDSA P-256 TLS identity generation (Prompt A15 §7) --
+  # a standard library rather than ad-hoc ASN.1 code.
+  basic_utils: ^5.7.0
+  # Used directly (not just transitively via basic_utils) for the ASN.1
+  # primitives in lib/security/self_signed_cert.dart.
+  pointycastle: ^4.0.0
+
+  # mDNS/DNS-SD advertisement on desktop-facing metadata (device_id,
+  # protocol/security profile) is done via Android's native NsdManager
+  # through the Kotlin platform bridge -- no Dart mDNS package needed.
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

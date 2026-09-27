@@ -70,35 +70,56 @@ resulting real HTTP request carries `Range: bytes=<durable_bytes>-` (not
 
 ## A13-PRODUCTION-SECURE-CHANNEL
 
-**Status:** OPEN
-**Blocking A13 foundation:** NO
-**Blocking real LAN beta:** YES
+**Status:** CLOSED (Prompt A15)
 
-**Description:** Prompt A13's `HttpFriendSendTransport` (the real, non-mock
-Device Mode transport) is plain HTTP plus a bearer-style auth token
-established during pairing. It is explicitly labeled EXPERIMENTAL/TEST
-TRANSPORT (see `docs/DEVICE_MODE_FOUNDATION.md`, "Security boundary").
-There is no TLS, no certificate pinning, no Noise-protocol-grade
-authenticated encryption, and no pairing-derived session key. An auth
-token observed on an untrusted local network (e.g. via ARP spoofing or a
-compromised device on the same LAN) could impersonate a paired device for
-the lifetime of that token.
+**Original description:** Prompt A13's `HttpFriendSendTransport` (the
+real, non-mock Device Mode transport) was plain HTTP plus a bearer-style
+auth token established during pairing, with no TLS, no certificate
+pinning, no Noise-protocol-grade authenticated encryption, and no
+pairing-derived session key.
 
-**Why not closed during A13:** deliberately deferred per the prompt's own
-guidance (§35-37) — final network security choices (TLS/mTLS/Noise/
-pairing-derived keys) are explicitly deferred until a real Android
-FriendSend peer exists (A14), since designing the final secure channel
-without a real second implementation to validate it against risks freezing
-the wrong contract. A13's job was to prove the handoff *protocol*
-(versioning, capability negotiation, integrity, cancellation, truthful
-acknowledgement), not to ship a production-secure transport.
+**Why it is closed now, and exactly what changed:** Prompt A15 replaced
+the *default* production Device Mode transport with
+`pinned-tls-signature-v1`
+(`rychlik.device.security.secure_transport.SecureFriendSendTransport`):
 
-**What would close it:** a real authenticated, encrypted channel (e.g.
-mutual TLS with pairing-derived certificate trust, or an equivalent
-Noise-protocol handshake) implemented and verified against a real second
-peer (the Android app from A14), with a test proving an attacker
-observing the wire cannot replay a captured auth token from a different
-network position/session.
+- `DeviceHandoffService()` with no explicit `transport` argument now
+  constructs the secure transport, not `HttpFriendSendTransport` — proven
+  by `test_default_transport_is_secure_not_plain_http`. The plain-HTTP
+  transport remains available, but only when a caller explicitly passes
+  `transport=HttpFriendSendTransport()` (all such call sites in the test
+  suite were updated to do this explicitly, matching the A15 prompt's
+  own §3 allowance for "isolated tests, legacy deterministic fixtures,
+  explicit development mode").
+- A real TLS connection with mandatory SPKI-pin verification happens
+  before any application byte is sent
+  (`secure_transport.connect_and_verify_pin`) — proven by
+  `test_real_wrong_pin_e2e_sends_zero_payload` (0 bytes sent on a pin
+  mismatch against a real second Dart TLS server).
+- Desktop authentication is cryptographic (Ed25519 challenge/response,
+  bound to the specific handoff + artifact identity) — proven by
+  `test_real_wrong_signature_e2e_sends_zero_payload` and
+  `test_real_auth_replay_e2e`.
+- Persistent trust survives a full restart of both the desktop identity/
+  trust store and the real Dart receiver process, without re-pairing —
+  proven by `test_real_persistent_trust_restart_e2e`.
+- No code path in `DeviceHandoffService`/`SecureFriendSendTransport`
+  automatically falls back to the plain-HTTP profile.
+- A real Python↔Dart secure pairing and secure handoff E2E both pass
+  against the real Dart receiver core (`bin/secure_receiver_harness.dart`
+  / `bin/pairing_client_harness.dart`), not a fixture --
+  `tests/test_friendsend_secure_lan_e2e.py` (8 tests, including a real
+  TLS wire-encryption capture proving a plaintext media marker never
+  appears on the wire).
+
+See `docs/FRIENDSEND_SECURITY_PROFILE_V1.md` for the full normative
+design and threat model, and `docs/FRIENDSEND_DESKTOP_SECURITY.md` /
+`docs/FRIENDSEND_ANDROID_SECURITY.md` for the implementation detail on
+each side. Two narrower items remain open as their own debt entries
+below: real Android `NsdManager` mDNS advertisement was never exercised
+on a real Android OS (`A15-PHYSICAL-MDNS-DISCOVERY`), and Android backup
+exclusion for the identity/trust files was not implemented in this phase
+(see `docs/FRIENDSEND_ANDROID_SECURITY.md`, "Android backup exclusion").
 
 ---
 
@@ -144,6 +165,43 @@ flow above, confirming the Android Sharesheet chooser genuinely opens
 with the received file, backed by a real `FileProvider` `content://`
 grant on a real Android OS -- something no host-side Dart harness or
 cross-language socket test can prove by itself (Prompt A14 §97).
+
+---
+
+## A15-PHYSICAL-MDNS-DISCOVERY
+
+**Status:** OPEN
+**Blocking automated A15:** NO
+**Blocking beta/release:** YES
+
+**Description:** Android's native `NsdManager`-based mDNS/DNS-SD
+advertisement (`MainActivity.kt::handleRegisterMdns`,
+`lib/security/mdns_advertiser.dart`) was implemented and compiles
+successfully against the real Android SDK (proven by real debug and
+release APK builds in this phase), but was never exercised at runtime on
+a real Android OS -- no emulator system image or physical device was
+available in this environment (same constraint as
+`A14-PHYSICAL-ANDROID-SHARE-SMOKE`).
+
+**Why not closed during A15:** the A15 prompt's own §173/§177 explicitly
+anticipates this exact gap and requires it to be tracked as debt rather
+than silently skipped or falsely claimed proven, when no emulator/device
+is available. What *was* independently verified instead: the
+desktop-side discovery half (`rychlik.device.security.discovery
+.FriendSendDiscoveryService`, backed by the real `zeroconf` library) was
+proven against a real second `zeroconf` advertiser standing in for the
+Android side's wire format (`tests/test_friendsend_discovery.py`,
+including the combined mDNS-spoof + real-TLS-pin rejection test), and
+the security profile's core claim -- "discovery is not trust" -- was
+proven with a real second Dart TLS identity as the "spoofed" endpoint,
+not a fake listener.
+
+**What would close it:** installing an Android emulator system image (or
+attaching a physical device via `adb`) and confirming a real
+`NsdManager.registerService()` call from the FriendSend app is actually
+discoverable by a real desktop `zeroconf` browser on the same LAN, with
+the correct `device_id`/`protocol_version`/`security_profile` TXT
+attributes.
 
 ---
 

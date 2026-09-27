@@ -2,11 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../handoff/handoff_controller.dart';
 import '../identity/device_identity.dart';
-import '../pairing/pairing_manager.dart';
-import '../protocol/models.dart';
+import '../security/secure_pairing_manager.dart';
 
-/// Minimal functional UI (Prompt A14 §16, §74-82, §148: no final design
-/// polish -- this proves the workflow, not the brand).
+/// Minimal functional UI (Prompt A14 §16, §74-82, §148; Prompt A15 §16:
+/// no final design polish -- this proves the workflow, not the brand).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
@@ -16,7 +15,7 @@ class HomeScreen extends StatefulWidget {
   });
 
   final DeviceIdentity identity;
-  final PairingManager pairingManager;
+  final SecurePairingManager pairingManager;
   final HandoffController controller;
 
   @override
@@ -33,16 +32,28 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  void _completePairing() {
+  Future<void> _completePairing() async {
     try {
       final payload = widget.pairingManager.parse(_pasteController.text.trim());
-      widget.pairingManager.completePairing(payload);
+      await widget.pairingManager.completePairing(payload);
+      if (!mounted) return;
       setState(() => _pairingError = null);
       widget.controller.markPaired();
-    } on ProtocolFormatException catch (e) {
+    } on PairingFormatException catch (e) {
+      if (!mounted) return;
       setState(() => _pairingError = e.message);
-    } on PairingException catch (e) {
-      setState(() => _pairingError = e.message);
+    } on PairingExpiredException {
+      if (!mounted) return;
+      setState(() => _pairingError = 'Pairing payload has expired. Ask Rýchlik for a fresh one.');
+    } on PairingUnsupportedProtocolException catch (e) {
+      if (!mounted) return;
+      setState(() => _pairingError = 'Unsupported protocol version: ${e.version}');
+    } on PairingProofMismatchException {
+      if (!mounted) return;
+      setState(() => _pairingError = 'Pairing could not be verified. Please try again.');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _pairingError = 'Pairing failed. Please try again.');
     }
   }
 

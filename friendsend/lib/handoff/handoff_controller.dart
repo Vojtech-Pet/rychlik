@@ -3,7 +3,8 @@ import 'dart:io';
 
 import '../platform/share_bridge.dart';
 import '../protocol/protocol.dart';
-import '../receiver/receiver_server.dart';
+import '../receiver/receiver_interface.dart';
+import '../receiver/receiver_server.dart' show ReceiverEvent, ReceiverEventKind;
 import '../receiver/temp_cache.dart';
 
 /// App-presentation state machine (Prompt A14 §76) -- distinct from the
@@ -56,7 +57,8 @@ class HandoffUiSnapshot {
   );
 }
 
-/// Wires [FriendSendReceiverServer] events into UI-facing state, and
+/// Wires a [FriendSendReceiverLike] receiver's events into UI-facing
+/// state, and
 /// drives the platform Sharesheet bridge once a payload is verified.
 /// Owns TTL/startup cleanup scheduling -- never one thread per file
 /// (§66).
@@ -70,7 +72,7 @@ class HandoffController {
     _subscription = receiver.events.listen(_onEvent);
   }
 
-  final FriendSendReceiverServer receiver;
+  final FriendSendReceiverLike receiver;
   final TempCache tempCache;
   final ShareBridge shareBridge;
   final bool autoShare;

@@ -19,6 +19,7 @@ from rychlik.device.contracts import (
     UnsupportedProtocolError,
 )
 from rychlik.device.device_handoff_service import DeviceHandoffEventKind, DeviceHandoffService
+from rychlik.device.transport import HttpFriendSendTransport
 from friendsend_receiver_fixture import FriendSendReceiverFixture
 
 BIG_PAYLOAD = (b"friendsend-test-bytes-" * 4000) * 8  # ~700KB, multiple 256KiB chunks
@@ -60,7 +61,7 @@ def receiver():
 
 @pytest.fixture
 def service():
-    svc = DeviceHandoffService()
+    svc = DeviceHandoffService(transport=HttpFriendSendTransport())
     svc.start()
     yield svc
     svc.stop()
@@ -172,7 +173,7 @@ def test_progress_e2e_observes_partial_before_complete(receiver, tmp_path):
     # is a test-only knob, defaulting to 0.0 in production) so partial
     # progress is deterministically observable, exactly like the slow-
     # pacing routes the acquisition test fixtures already use.
-    service = DeviceHandoffService(chunk_size=32 * 1024, chunk_delay=0.02)
+    service = DeviceHandoffService(chunk_size=32 * 1024, chunk_delay=0.02, transport=HttpFriendSendTransport())
     service.start()
     try:
         device = _pair(service, receiver)
@@ -195,7 +196,7 @@ def test_progress_e2e_observes_partial_before_complete(receiver, tmp_path):
 
 
 def test_real_cancel_mid_transfer(receiver, tmp_path):
-    service = DeviceHandoffService(chunk_size=32 * 1024, chunk_delay=0.02)
+    service = DeviceHandoffService(chunk_size=32 * 1024, chunk_delay=0.02, transport=HttpFriendSendTransport())
     service.start()
     try:
         device = _pair(service, receiver)
@@ -227,7 +228,7 @@ def test_cancel_unknown_handoff_returns_false(service):
 
 def test_receiver_oversize_rejected_before_streaming(tmp_path):
     fixture = FriendSendReceiverFixture(max_payload_bytes=100).start()
-    service = DeviceHandoffService()
+    service = DeviceHandoffService(transport=HttpFriendSendTransport())
     service.start()
     try:
         device = _pair(service, fixture)
@@ -246,7 +247,7 @@ def test_receiver_oversize_rejected_before_streaming(tmp_path):
 
 def test_receiver_unsupported_mime_rejected_before_streaming(tmp_path):
     fixture = FriendSendReceiverFixture(supported_mime_types={"video/mp4"}).start()
-    service = DeviceHandoffService()
+    service = DeviceHandoffService(transport=HttpFriendSendTransport())
     service.start()
     try:
         device = _pair(service, fixture)
@@ -283,7 +284,7 @@ def test_receiver_generic_rejection(service, receiver, tmp_path):
 
 
 def test_wrong_auth_token_rejected(receiver, tmp_path):
-    service = DeviceHandoffService()
+    service = DeviceHandoffService(transport=HttpFriendSendTransport())
     service.start()
     try:
         payload = service.create_pairing_session(endpoint=receiver.endpoint)
@@ -419,7 +420,7 @@ def test_unsubscribe_stops_delivery(service, receiver, tmp_path):
 
 def test_no_thread_leak_after_stop(receiver, tmp_path):
     before = threading.active_count()
-    service = DeviceHandoffService()
+    service = DeviceHandoffService(transport=HttpFriendSendTransport())
     service.start()
     device = _pair(service, receiver)
     artifact = _artifact(tmp_path)
@@ -427,6 +428,27 @@ def test_no_thread_leak_after_stop(receiver, tmp_path):
     _wait_until(lambda: service.snapshot(handoff_id).is_terminal, timeout=10)
     service.stop()
     assert threading.active_count() <= before
+
+
+# --- Prompt A15: production default is the secure transport --------------------
+
+
+def test_default_transport_is_secure_not_plain_http(tmp_path, monkeypatch):
+    """§3/§37 of the A15 prompt: plain-http-bearer-v1 must never be the
+    silent default -- constructing DeviceHandoffService() with no
+    explicit transport must produce the pinned-tls-signature-v1 secure
+    transport. Isolated from the real user home directory via
+    XDG_DATA_HOME, since the secure default auto-provisions a real
+    persistent identity file."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    from rychlik.device.security.secure_transport import SecureFriendSendTransport
+
+    service = DeviceHandoffService()
+    try:
+        assert isinstance(service._transport, SecureFriendSendTransport)
+        assert not isinstance(service._transport, HttpFriendSendTransport)
+    finally:
+        service.stop()
 
 
 def receiver_never_logged(fixture) -> bool:

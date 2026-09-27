@@ -13,6 +13,7 @@ from rychlik.acquisition.contracts import DownloadRequest
 from rychlik.core.download_manager_service import DownloadManagerConfig, DownloadManagerService
 from rychlik.device.contracts import DeviceCapability, HandoffState
 from rychlik.device.device_handoff_service import DeviceHandoffService
+from rychlik.device.transport import HttpFriendSendTransport
 from rychlik.gui.completed_artifact_bridge import build_artifact_for_completed
 from friendsend_receiver_fixture import FriendSendReceiverFixture
 from http_fixture_server import NORMAL_BODY
@@ -50,7 +51,7 @@ def test_real_download_to_device_handoff_end_to_end(http_fixture_server, tmp_pat
     manager = _download_manager(tmp_path, max_active_transfers=1)
     manager.start()
     fixture = FriendSendReceiverFixture().start()
-    device_service = DeviceHandoffService()
+    device_service = DeviceHandoffService(transport=HttpFriendSendTransport())
     device_service.start()
     try:
         added = manager.add_download(
@@ -105,7 +106,7 @@ def test_restarted_completion_to_device_handoff(http_fixture_server, tmp_path):
     manager2 = _download_manager(tmp_path, max_active_transfers=0)
     manager2.start()
     fixture = FriendSendReceiverFixture().start()
-    device_service = DeviceHandoffService()
+    device_service = DeviceHandoffService(transport=HttpFriendSendTransport())
     device_service.start()
     try:
         artifact, result = build_artifact_for_completed(manager2, added.queue_entry_id)
@@ -131,7 +132,7 @@ def test_device_mode_and_share_by_link_coexist_independently(http_fixture_server
     manager = _download_manager(tmp_path, max_active_transfers=1)
     manager.start()
     fixture = FriendSendReceiverFixture().start()
-    device_service = DeviceHandoffService()
+    device_service = DeviceHandoffService(transport=HttpFriendSendTransport())
     device_service.start()
     try:
         added = manager.add_download(
@@ -170,7 +171,7 @@ def test_cancel_device_handoff_does_not_affect_original_download(http_fixture_se
     manager = _download_manager(tmp_path, max_active_transfers=1)
     manager.start()
     fixture = FriendSendReceiverFixture().start()
-    device_service = DeviceHandoffService(chunk_size=32 * 1024, chunk_delay=0.02)
+    device_service = DeviceHandoffService(chunk_size=32 * 1024, chunk_delay=0.02, transport=HttpFriendSendTransport())
     device_service.start()
     try:
         added = manager.add_download(

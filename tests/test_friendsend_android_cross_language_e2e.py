@@ -27,6 +27,7 @@ from rychlik.acquisition.contracts import DownloadRequest
 from rychlik.core.download_manager_service import DownloadManagerConfig, DownloadManagerService
 from rychlik.device.contracts import DeviceCapability, HandoffErrorCode, HandoffState
 from rychlik.device.device_handoff_service import DeviceHandoffService
+from rychlik.device.transport import HttpFriendSendTransport
 from rychlik.gui.completed_artifact_bridge import build_artifact_for_completed
 from rychlik.core.artifact import Artifact
 
@@ -82,7 +83,7 @@ def dart_harness(tmp_path):
 
 @pytest.fixture
 def device_service():
-    service = DeviceHandoffService()
+    service = DeviceHandoffService(transport=HttpFriendSendTransport())
     service.start()
     yield service
     service.stop()
@@ -239,7 +240,7 @@ def test_real_cancel_cross_language_e2e(dart_harness, tmp_path):
     # Pace the sender so cancellation genuinely lands mid-transfer instead
     # of racing a transfer that already finished (same class of fix as
     # A13's own chunk_delay -- real bytes, real socket, just paced).
-    paced_service = DeviceHandoffService(chunk_size=64 * 1024, chunk_delay=0.01)
+    paced_service = DeviceHandoffService(chunk_size=64 * 1024, chunk_delay=0.01, transport=HttpFriendSendTransport())
     paced_service.start()
     try:
         payload = paced_service.create_pairing_session(endpoint=dart_harness.endpoint)

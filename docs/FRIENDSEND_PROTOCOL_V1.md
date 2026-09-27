@@ -12,6 +12,18 @@ proven against a deterministic test receiver fixture, not a real Android
 device.** No production-secure transport is claimed — see "Security
 boundary" below.
 
+**Update (Prompt A15):** application-level handoff semantics documented
+in this file (offer/stream exchange, `HandoffState`, acknowledgement
+meanings, error codes) are unchanged and remain v1. Production Device
+Mode now runs this exact exchange over a separate security/transport
+profile, `pinned-tls-signature-v1` — real TLS with SPKI pinning plus
+Ed25519 desktop authentication — documented normatively in
+[FRIENDSEND_SECURITY_PROFILE_V1.md](FRIENDSEND_SECURITY_PROFILE_V1.md).
+The plain-HTTP + bearer-token transport this document's examples show is
+retained only as the legacy/development/test profile
+(`plain-http-bearer-v1`); it is no longer the default production
+transport. This file was not otherwise rewritten for A15.
+
 ## Protocol version
 
 Every exchange declares `protocol_version = 1` via the

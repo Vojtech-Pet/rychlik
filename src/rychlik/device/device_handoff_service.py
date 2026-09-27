@@ -81,7 +81,12 @@ class DeviceHandoffService:
         clock: Callable[[], datetime] = _utc_now,
         executor_factory=None,
     ) -> None:
-        self._transport = transport or HttpFriendSendTransport()
+        # Prompt A15 §3/§37: plain-http-bearer-v1 (HttpFriendSendTransport)
+        # must not remain the default normal paired-device transport --
+        # it is only ever used when a caller explicitly asks for it
+        # (isolated tests, legacy fixtures, explicit dev mode). Production
+        # default is the pinned-tls-signature-v1 secure transport.
+        self._transport = transport or self._default_secure_transport()
         self._registry = registry or PairedDeviceRegistry()
         self._pairing_manager = pairing_manager or PairingManager(clock=clock)
         self._max_concurrent_handoffs = max_concurrent_handoffs
@@ -103,6 +108,22 @@ class DeviceHandoffService:
         self._next_token = 1
 
         self._running = False
+
+    @staticmethod
+    def _default_secure_transport() -> FriendSendTransport:
+        """Auto-provisions the desktop's persistent identity and trust
+        store the same way `DesktopIdentityStore`/`FriendSendTrustStore`
+        would be constructed standalone -- a caller never has to wire
+        these up manually just to get the secure, production-default
+        transport."""
+        from rychlik.device.security.identity import DesktopIdentityStore
+        from rychlik.device.security.secure_transport import SecureFriendSendTransport
+        from rychlik.device.security.trust_store import FriendSendTrustStore
+
+        identity_store = DesktopIdentityStore()
+        identity = identity_store.load_or_create()
+        trust_store = FriendSendTrustStore(identity_store.data_dir / "trust.json")
+        return SecureFriendSendTransport(identity=identity, trust_store=trust_store)
 
     # --- lifecycle --------------------------------------------------------
 

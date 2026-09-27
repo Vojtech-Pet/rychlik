@@ -5,6 +5,8 @@ requires-python = ">=3.11"
 dependencies = [
     "PySide6",
     "requests",
+    "cryptography",
+    "zeroconf",
 ]
 
 [tool.pytest.ini_options]

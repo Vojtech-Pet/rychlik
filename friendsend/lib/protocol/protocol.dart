@@ -48,7 +48,13 @@ enum HandoffErrorCode {
   incompleteTransfer('INCOMPLETE_TRANSFER'),
   integrityMismatch('INTEGRITY_MISMATCH'),
   receiverRejected('RECEIVER_REJECTED'),
-  cancelled('CANCELLED');
+  cancelled('CANCELLED'),
+  // Prompt A15 (pinned-tls-signature-v1 security profile):
+  untrustedDesktop('UNTRUSTED_DESKTOP'),
+  authReplay('AUTH_REPLAY'),
+  challengeExpired('CHALLENGE_EXPIRED'),
+  tlsPinMismatch('TLS_PIN_MISMATCH'),
+  deviceIdentityMismatch('DEVICE_IDENTITY_MISMATCH');
 
   const HandoffErrorCode(this.wireName);
 
