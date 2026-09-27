@@ -102,6 +102,51 @@ network position/session.
 
 ---
 
+## A14-PHYSICAL-ANDROID-SHARE-SMOKE
+
+**Status:** OPEN
+**Blocking A14 automated gate:** NO
+**Blocking beta/release:** YES
+
+**Description:** Prompt A14's strongest possible test --
+
+```text
+Rýchlik desktop -> real Android device running FriendSend
+    -> real receive over a real LAN
+    -> Android Sharesheet actually opens on that device
+```
+
+was never executed. Neither a usable Android emulator (system image +
+`emulator` binary) nor a physical Android device were available in the
+environment this phase was executed in, even though KVM (`/dev/kvm`) is
+present and an Android SDK, platform, and build-tools were installed for
+the phase (see `docs/FRIENDSEND_ANDROID_MVP_RESULT.md`, ANDROID
+TOOLCHAIN). This item covers both the emulator-based E2E (A14 prompt
+§105) and the physical-device manual smoke test (§107) -- both require
+an actual running Android OS, which neither the emulator nor a physical
+device provided here.
+
+**Why not closed during A14:** explicitly permitted to remain open by
+the phase's own acceptance gate (§108: "Do not fail otherwise-complete
+automated A14 purely because no physical phone exists"). What *was*
+independently verified instead: a real debug and release APK build
+(`flutter build apk --debug` / `--release`), the FileProvider/manifest
+configuration inspected directly against the built APK via `aapt dump
+xmltree`/`aapt dump permissions`, and the full protocol/streaming/
+integrity/cancellation logic proven via a real Python<->Dart
+cross-language socket E2E (`tests/test_friendsend_android_cross_language_e2e.py`)
+driving the exact same receiver code the Flutter app ships, without an
+Android runtime.
+
+**What would close it:** installing an Android emulator system image (or
+attaching a physical device via `adb`) and running the real end-to-end
+flow above, confirming the Android Sharesheet chooser genuinely opens
+with the received file, backed by a real `FileProvider` `content://`
+grant on a real Android OS -- something no host-side Dart harness or
+cross-language socket test can prove by itself (Prompt A14 §97).
+
+---
+
 *(Future validation debt items should be appended below, each with the
 same Status/Blocking/Description/Why-not-closed/What-would-close-it
 shape.)*

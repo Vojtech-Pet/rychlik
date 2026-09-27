@@ -160,7 +160,7 @@ class HttpFriendSendTransport(FriendSendTransport):
         hasher = hashlib.sha256()
         sent = {"n": 0}
 
-        def _chunks():
+        def _iter_chunks():
             with artifact_path.open("rb") as handle:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -182,13 +182,30 @@ class HttpFriendSendTransport(FriendSendTransport):
                         # routes -- still a real socket, real bytes.
                         time.sleep(chunk_delay)
 
+        # A bare generator has no __len__, so `requests`/urllib3 cannot
+        # determine its size and falls back to `Transfer-Encoding:
+        # chunked` -- while ALSO leaving the `Content-Length` header this
+        # method sets below in place, producing a request with both
+        # headers set simultaneously. That is invalid per RFC 7230
+        # §3.3.3, and Python's own `http.server`-based test fixture
+        # happens to tolerate it (it only ever reads by Content-Length
+        # and never parses Transfer-Encoding at all), but a real,
+        # standards-conformant HTTP/1.1 server does not have to -- this
+        # was found via the real Python<->Dart FriendSend Android E2E in
+        # Prompt A14, which requires an actually correct wire framing
+        # against a spec-conformant peer. `_ChunkedFile` fixes this by
+        # giving the iterable a real `__len__`, so `requests` sends a
+        # single, unambiguous Content-Length-framed body instead.
         stream_headers = dict(headers)
         stream_headers["Content-Type"] = request.mime_type
         stream_headers["Content-Length"] = str(request.size_bytes)
 
         try:
             stream_response = requests.post(
-                f"{base}/handoff/stream", data=_chunks(), headers=stream_headers, timeout=_TIMEOUT
+                f"{base}/handoff/stream",
+                data=_SizedChunks(_iter_chunks(), request.size_bytes),
+                headers=stream_headers,
+                timeout=_TIMEOUT,
             )
         except TransportCancelled:
             return SendOutcome(HandoffState.CANCELLED, sent["n"])
@@ -207,6 +224,23 @@ class HttpFriendSendTransport(FriendSendTransport):
             return SendOutcome(HandoffState.RECEIVED, sent["n"])
         code = _error_code_from_body(body, HandoffErrorCode.RECEIVER_REJECTED)
         return SendOutcome(HandoffState.FAILED, sent["n"], code)
+
+
+class _SizedChunks:
+    """Wraps a chunk-yielding generator with a `__len__`, so `requests`
+    sends a single, correctly-framed `Content-Length` body instead of
+    also adding `Transfer-Encoding: chunked` for a body it otherwise
+    cannot measure (see the send() comment above for why this matters)."""
+
+    def __init__(self, chunks, total_bytes: int) -> None:
+        self._chunks = chunks
+        self._total_bytes = total_bytes
+
+    def __len__(self) -> int:
+        return self._total_bytes
+
+    def __iter__(self):
+        return iter(self._chunks)
 
 
 def _safe_json(response: requests.Response) -> dict:

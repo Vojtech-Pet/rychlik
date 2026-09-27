@@ -1,0 +1,11 @@
+{
+  "protocol_version": 1,
+  "pairing_session_id": "9c1e2f3a-4b5c-6d7e-8f90-1a2b3c4d5e6f",
+  "desktop_instance_id": "rychlik-desktop-0001",
+  "endpoint": {
+    "host": "192.168.1.42",
+    "port": 51823
+  },
+  "secret": "8f3a1c2d4e5f60718293a4b5c6d7e8f9",
+  "expires_at_utc": "2099-01-01T00:00:00+00:00"
+}

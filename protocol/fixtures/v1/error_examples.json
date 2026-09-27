@@ -1,0 +1,11 @@
+{
+  "unsupported_protocol": {"state": "FAILED", "error_code": "UNSUPPORTED_PROTOCOL"},
+  "authentication_failed": {"state": "FAILED", "error_code": "AUTHENTICATION_FAILED"},
+  "pairing_expired": {"state": "FAILED", "error_code": "PAIRING_EXPIRED"},
+  "unsupported_capability": {"state": "FAILED", "error_code": "UNSUPPORTED_CAPABILITY"},
+  "unsupported_media": {"state": "FAILED", "error_code": "UNSUPPORTED_MEDIA"},
+  "payload_too_large": {"state": "FAILED", "error_code": "PAYLOAD_TOO_LARGE"},
+  "incomplete_transfer": {"state": "FAILED", "error_code": "INCOMPLETE_TRANSFER"},
+  "integrity_mismatch": {"state": "FAILED", "error_code": "INTEGRITY_MISMATCH"},
+  "receiver_rejected": {"state": "FAILED", "error_code": "RECEIVER_REJECTED"}
+}
