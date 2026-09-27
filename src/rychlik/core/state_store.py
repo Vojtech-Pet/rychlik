@@ -39,7 +39,7 @@ from rychlik.core.download_queue import QueueEntry, QueueEntryState, QueuePriori
 from rychlik.core.download_task import DownloadTask, DownloadTaskFailure, DownloadTaskState, restore_task
 from rychlik.core.partial_transfer import PartialTransferState, ValidatorKind
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA_VERSION_KEY = "schema_version"
 _CLEAN_SHUTDOWN_KEY = "clean_shutdown"
@@ -86,6 +86,27 @@ class PersistedRetrySchedule:
 
 
 @dataclass(frozen=True)
+class CompletedFileRecord:
+    """Durable identity of a successfully completed download's final file
+    (Prompt A12), keyed by `queue_entry_id` -- never `task_id` alone,
+    exactly like every other durable record here: an old, unrelated
+    occurrence of the same task must never be confused with a later one.
+    Deliberately minimal: no source URL, cookies, Authorization, or
+    worker-runtime state (those never belonged here in the first place)."""
+
+    queue_entry_id: str
+    task_id: str
+    local_path: Path
+    display_name: str
+    size_bytes: int | None
+    completed_at_utc: datetime
+
+    def __post_init__(self) -> None:
+        if self.completed_at_utc.tzinfo is None:
+            raise ValueError("completed_at_utc must be timezone-aware")
+
+
+@dataclass(frozen=True)
 class PersistentDownloadState:
     """The full durable snapshot -- not the A7 GUI snapshot
     (DownloadManagerSnapshot) and not a live runtime object graph."""
@@ -95,6 +116,7 @@ class PersistentDownloadState:
     queue_entries: dict[str, QueueEntry]
     retry_schedules: dict[str, PersistedRetrySchedule]
     partial_transfers: dict[str, PartialTransferState] = field(default_factory=dict)
+    completed_files: dict[str, CompletedFileRecord] = field(default_factory=dict)
 
 
 def default_state_db_path() -> Path:
@@ -270,6 +292,26 @@ class SqliteDownloadStateStore:
                 )
                 """
             )
+            # Prompt A12 (schema v3): same real-migration pattern as v2 --
+            # an existing v1 or v2 database gains exactly this table inside
+            # the same transaction; no row in any earlier table is touched.
+            # For historical (pre-v3) COMPLETED tasks there is no durable
+            # evidence of the actual final path (Content-Disposition/
+            # filename-collision behavior could have changed it), so this
+            # table starts empty for them rather than guessing one (§41) --
+            # only completions recorded from this version onward get a row.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS completed_files (
+                    queue_entry_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    local_path TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    size_bytes INTEGER,
+                    completed_at_utc TEXT NOT NULL
+                )
+                """
+            )
 
             if on_disk_version is None:
                 conn.execute(
@@ -341,12 +383,16 @@ class SqliteDownloadStateStore:
         delete_retry_schedule_id: str | None = None,
         partial_transfer: PartialTransferState | None = None,
         delete_partial_transfer_id: str | None = None,
+        completed_file: "CompletedFileRecord | None" = None,
     ) -> None:
         """One SQLite transaction (§23/§67) writing exactly the rows a single
         durable lifecycle event touches. Never called per A7 progress chunk
         (§74) -- only on lifecycle/queue/resume-checkpoint events (Prompt A9
         adds `partial_transfer`/`delete_partial_transfer_id`, following the
-        exact same additive pattern as the A8 retry-schedule fields)."""
+        exact same additive pattern as the A8 retry-schedule fields; Prompt
+        A12 adds `completed_file` the same way -- there is deliberately no
+        `delete_completed_file_id`, since a completed-file record is
+        write-once/never revoked by this layer)."""
         with self._transaction():
             self._upsert_task(task)
             if request is not None:
@@ -371,6 +417,8 @@ class SqliteDownloadStateStore:
                     "DELETE FROM partial_transfers WHERE queue_entry_id = ?",
                     (delete_partial_transfer_id,),
                 )
+            if completed_file is not None:
+                self._upsert_completed_file(completed_file)
 
     def _upsert_task(self, task: DownloadTask) -> None:
         failure = task.last_failure
@@ -506,6 +554,29 @@ class SqliteDownloadStateStore:
             ),
         )
 
+    def _upsert_completed_file(self, record: "CompletedFileRecord") -> None:
+        self._conn.execute(
+            """
+            INSERT INTO completed_files
+                (queue_entry_id, task_id, local_path, display_name, size_bytes, completed_at_utc)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(queue_entry_id) DO UPDATE SET
+                task_id = excluded.task_id,
+                local_path = excluded.local_path,
+                display_name = excluded.display_name,
+                size_bytes = excluded.size_bytes,
+                completed_at_utc = excluded.completed_at_utc
+            """,
+            (
+                record.queue_entry_id,
+                record.task_id,
+                str(record.local_path),
+                record.display_name,
+                record.size_bytes,
+                _to_utc_iso(record.completed_at_utc),
+            ),
+        )
+
     # --- whole-snapshot checkpoint (§67/§68), used for initial save and
     # for persisting recovery's canonical post-recovery state (§88 step 8) --
 
@@ -514,6 +585,7 @@ class SqliteDownloadStateStore:
         rows no longer present in `state` do not survive as ghost live
         state."""
         with self._transaction():
+            self._conn.execute("DELETE FROM completed_files")
             self._conn.execute("DELETE FROM partial_transfers")
             self._conn.execute("DELETE FROM retry_schedules")
             self._conn.execute("DELETE FROM queue_entries")
@@ -529,6 +601,8 @@ class SqliteDownloadStateStore:
                 self._upsert_retry_schedule(schedule)
             for partial in state.partial_transfers.values():
                 self._upsert_partial_transfer(partial)
+            for record in state.completed_files.values():
+                self._upsert_completed_file(record)
 
     # --- load (§88 step 5, §109/§110) -----------------------------------
 
@@ -564,6 +638,25 @@ class SqliteDownloadStateStore:
                 prefix_sha256=row["prefix_sha256"],
                 created_at=_from_utc_iso(row["created_at"]),
                 updated_at=_from_utc_iso(row["updated_at"]),
+            )
+
+    def get_completed_file(self, queue_entry_id: str) -> "CompletedFileRecord | None":
+        """Narrow single-row query (Prompt A12), mirroring
+        load_partial_transfer(): the privileged accessor calls this once
+        per lookup, never as part of any hot path."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM completed_files WHERE queue_entry_id = ?", (queue_entry_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return CompletedFileRecord(
+                queue_entry_id=row["queue_entry_id"],
+                task_id=row["task_id"],
+                local_path=Path(row["local_path"]),
+                display_name=row["display_name"],
+                size_bytes=row["size_bytes"],
+                completed_at_utc=_from_utc_iso(row["completed_at_utc"]),
             )
 
     def _load_locked(self) -> PersistentDownloadState:
@@ -662,10 +755,27 @@ class SqliteDownloadStateStore:
                 updated_at=_from_utc_iso(row["updated_at"]),
             )
 
+        completed_files: dict[str, CompletedFileRecord] = {}
+        for row in self._conn.execute("SELECT * FROM completed_files"):
+            if row["task_id"] not in tasks:
+                raise PersistentStateCorruptionError(
+                    f"completed_file {row['queue_entry_id']!r} references unknown task_id "
+                    f"{row['task_id']!r}"
+                )
+            completed_files[row["queue_entry_id"]] = CompletedFileRecord(
+                queue_entry_id=row["queue_entry_id"],
+                task_id=row["task_id"],
+                local_path=Path(row["local_path"]),
+                display_name=row["display_name"],
+                size_bytes=row["size_bytes"],
+                completed_at_utc=_from_utc_iso(row["completed_at_utc"]),
+            )
+
         return PersistentDownloadState(
             tasks=tasks,
             requests=requests,
             queue_entries=queue_entries,
             retry_schedules=retry_schedules,
             partial_transfers=partial_transfers,
+            completed_files=completed_files,
         )

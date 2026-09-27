@@ -464,6 +464,34 @@ class ConcurrentDownloadRuntime:
             return
         self._state_store.checkpoint_task_state(task=task, delete_partial_transfer_id=queue_entry_id)
 
+    def _save_completed_file(self, candidate: DispatchCandidate, completed_download) -> None:
+        """Prompt A12: captures the exact real final path/size from this
+        attempt's own CompletedDownload right after dispatch() returns.
+        This is a SEPARATE small transaction from the COMPLETED task/queue
+        checkpoint dispatch() already performed inside the coordinator
+        (§43/§44 -- documented, not hidden, crash window: a process could
+        die between those two commits, leaving a durably-COMPLETED task
+        with no completed_files row yet; the privileged accessor then
+        honestly reports the file as unavailable rather than guessing).
+        Never deletes/mutates the real file merely because this second
+        checkpoint might fail (§114)."""
+        if completed_download is None:
+            return
+        task = self._tasks.get(candidate.task_id)
+        if task is None:
+            return
+        from rychlik.core.state_store import CompletedFileRecord
+
+        record = CompletedFileRecord(
+            queue_entry_id=candidate.queue_entry_id,
+            task_id=candidate.task_id,
+            local_path=completed_download.final_path,
+            display_name=completed_download.display_name,
+            size_bytes=completed_download.size,
+            completed_at_utc=self._clock(),
+        )
+        self._state_store.checkpoint_task_state(task=task, completed_file=record)
+
     # --- presentation snapshots (Prompt A7) ---------------------------------
 
     def manager_snapshot(self, *, include_removed: tuple[str, ...] = ()) -> DownloadManagerSnapshot:
@@ -723,6 +751,8 @@ class ConcurrentDownloadRuntime:
             if result.outcome == DispatchOutcome.RETRY_WAIT:
                 with self._state_lock:
                     self._handle_retry_wait_locked(candidate)
+            elif result.outcome == DispatchOutcome.COMPLETED and self._state_store is not None:
+                self._save_completed_file(candidate, result.completed_download)
         except DispatchCoordinatorError as exc:
             error = f"{type(exc).__name__}: {exc}"
         except Exception as exc:  # noqa: BLE001 - worker bug must not kill the loop (§38)

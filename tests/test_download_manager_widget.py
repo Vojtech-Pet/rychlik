@@ -46,10 +46,11 @@ def _item(**overrides) -> DownloadViewSnapshot:
 
 
 class _FakeManager:
-    def __init__(self, items=(), state=ManagerState.RUNNING, recovery_report=None):
+    def __init__(self, items=(), state=ManagerState.RUNNING, recovery_report=None, completed_file_result=None):
         self.state = state
         self.last_recovery_report = recovery_report
         self._items = {i.queue_entry_id: i for i in items}
+        self._completed_file_result = completed_file_result
         self._subscribers = {}
         self._next_token = 1
         self.calls = []
@@ -115,6 +116,14 @@ class _FakeManager:
     def move_after(self, queue_entry_id, target_queue_entry_id):
         self.calls.append(("move_after", queue_entry_id, target_queue_entry_id))
         return ManagerCommandResult(CommandStatus.APPLIED, queue_entry_id=queue_entry_id)
+
+    def completed_file(self, queue_entry_id):
+        self.calls.append(("completed_file", queue_entry_id))
+        if self._completed_file_result is not None:
+            return self._completed_file_result
+        from rychlik.core.download_manager_service import CompletedFileResult, CompletedFileStatus
+
+        return CompletedFileResult(CompletedFileStatus.NOT_COMPLETED, reason="task is not COMPLETED")
 
 
 def _select(widget, queue_entry_id):
@@ -228,7 +237,21 @@ def test_enablement_terminal_states_disable_cancel(qapp):
         widget = DownloadManagerWidget(manager)
         _select(widget, "q1")
         assert not widget.cancel_button.isEnabled(), state
-        assert not widget.share_button.isEnabled()
+
+
+def test_enablement_share_and_open_folder_only_for_completed(qapp):
+    for state in (DownloadTaskState.FAILED, DownloadTaskState.CANCELLED, DownloadTaskState.READY):
+        manager = _FakeManager(items=[_item(task_state=state, queue_state=QueueEntryState.REMOVED)])
+        widget = DownloadManagerWidget(manager)
+        _select(widget, "q1")
+        assert not widget.share_button.isEnabled(), state
+        assert not widget.open_folder_button.isEnabled(), state
+
+    manager = _FakeManager(items=[_item(task_state=DownloadTaskState.COMPLETED, queue_state=QueueEntryState.REMOVED)])
+    widget = DownloadManagerWidget(manager)
+    _select(widget, "q1")
+    assert widget.share_button.isEnabled()
+    assert widget.open_folder_button.isEnabled()
 
 
 # --- add download --------------------------------------------------------------

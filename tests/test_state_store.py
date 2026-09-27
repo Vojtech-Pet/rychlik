@@ -8,6 +8,8 @@ from rychlik.core.download_queue import QueueEntry, QueueEntryState, QueuePriori
 from rychlik.core.download_task import DownloadTaskFailure, DownloadTaskState, create_task
 from rychlik.core.partial_transfer import PartialTransferState, ValidatorKind
 from rychlik.core.state_store import (
+    SCHEMA_VERSION,
+    CompletedFileRecord,
     PersistedRetrySchedule,
     PersistentStateCorruptionError,
     SqliteDownloadStateStore,
@@ -379,6 +381,112 @@ def test_partial_transfer_with_no_validator(tmp_path):
     assert loaded.partial_transfers["qe-A"].validator_value is None
 
 
+def _completed_record(**kwargs) -> CompletedFileRecord:
+    defaults = dict(
+        queue_entry_id="qe-A",
+        task_id="A",
+        local_path=Path("/tmp/dest/video.mp4"),
+        display_name="video.mp4",
+        size_bytes=12345,
+        completed_at_utc=T0,
+    )
+    defaults.update(kwargs)
+    return CompletedFileRecord(**defaults)
+
+
+def test_completed_file_round_trip(tmp_path):
+    store = _store(tmp_path)
+    task = create_task("A", now=T0).mark_ready(now=T0).start_transfer(now=T0).complete(now=T0)
+    record = _completed_record()
+    store.checkpoint_task_state(task=task, completed_file=record)
+
+    loaded = store.load()
+    assert loaded.completed_files["qe-A"] == record
+    assert store.get_completed_file("qe-A") == record
+
+
+def test_completed_file_unknown_queue_entry_returns_none(tmp_path):
+    store = _store(tmp_path)
+    assert store.get_completed_file("ghost") is None
+
+
+def test_completed_file_survives_replace_all(tmp_path):
+    from rychlik.core.state_store import PersistentDownloadState
+
+    store = _store(tmp_path)
+    task = create_task("A", now=T0).mark_ready(now=T0).start_transfer(now=T0).complete(now=T0)
+    record = _completed_record()
+    store.checkpoint_task_state(task=task, completed_file=record)
+
+    persisted = store.load()
+    store.replace_all(persisted)  # round-trip through replace_all must not drop it
+
+    loaded = store.load()
+    assert loaded.completed_files["qe-A"] == record
+
+
+def test_schema_v2_to_v3_real_migration_preserves_data(tmp_path):
+    """Real transactional v2 -> v3 migration: an authentic v2 database
+    (the five A8/A9 tables, no completed_files table) gains exactly the
+    new table; no existing row is touched."""
+    import sqlite3
+
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute(
+        """
+        CREATE TABLE download_tasks (
+            task_id TEXT PRIMARY KEY, state TEXT NOT NULL, attempt_count INTEGER NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+            last_failure_code TEXT, last_failure_message TEXT, last_failure_retryable INTEGER
+        )
+        """
+    )
+    conn.execute(
+        "CREATE TABLE download_requests (task_id TEXT PRIMARY KEY, url TEXT NOT NULL, "
+        "destination_dir TEXT NOT NULL, filename_hint TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE queue_entries (queue_entry_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+        "state TEXT NOT NULL, priority TEXT NOT NULL, position INTEGER NOT NULL, "
+        "enqueued_at TEXT NOT NULL, updated_at TEXT NOT NULL, paused_at TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE retry_schedules (queue_entry_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+        "attempt_count_snapshot INTEGER NOT NULL, delay_seconds REAL NOT NULL, "
+        "scheduled_at_utc TEXT NOT NULL, not_before_utc TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE partial_transfers (queue_entry_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, "
+        "attempt_count_snapshot INTEGER NOT NULL, temp_path TEXT NOT NULL, final_path TEXT NOT NULL, "
+        "durable_bytes INTEGER NOT NULL, expected_total_bytes INTEGER, validator_kind TEXT NOT NULL, "
+        "validator_value TEXT, prefix_sha256 TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    conn.execute("INSERT INTO metadata VALUES ('schema_version', '2')")
+    conn.execute("INSERT INTO metadata VALUES ('clean_shutdown', '1')")
+    conn.execute(
+        "INSERT INTO download_tasks VALUES ('A', 'COMPLETED', 1, ?, ?, ?, ?, NULL, NULL, NULL)",
+        (T0.isoformat(), T0.isoformat(), T0.isoformat(), T0.isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+    store = SqliteDownloadStateStore(db_path)
+    store.initialize()
+
+    loaded = store.load()
+    assert loaded.tasks["A"].state == DownloadTaskState.COMPLETED
+    assert loaded.completed_files == {}  # no durable evidence for this pre-v3 completion (§41)
+
+    conn = sqlite3.connect(db_path)
+    version = conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()[0]
+    assert version == str(SCHEMA_VERSION)
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "completed_files" in tables
+    conn.close()
+
+
 def test_schema_v1_to_v2_real_migration_preserves_data(tmp_path):
     db_path = tmp_path / "state.db"
 
@@ -426,19 +534,21 @@ def test_schema_v1_to_v2_real_migration_preserves_data(tmp_path):
     conn.close()
 
     store = SqliteDownloadStateStore(db_path)
-    store.initialize()  # real transactional v1 -> v2 migration
+    store.initialize()  # real transactional v1 -> current-version migration
 
     loaded = store.load()
     assert loaded.tasks["A"].state == DownloadTaskState.READY
     assert loaded.queue_entries["qe-A"].task_id == "A"
     assert loaded.partial_transfers == {}  # new table, empty after migration
+    assert loaded.completed_files == {}  # new table, empty after migration
     assert store.get_previous_shutdown_clean() is True  # A8 metadata preserved
 
     conn = sqlite3.connect(db_path)
     version = conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()[0]
-    assert version == "2"
+    assert version == str(SCHEMA_VERSION)
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "partial_transfers" in tables
+    assert "completed_files" in tables
     conn.close()
 
 

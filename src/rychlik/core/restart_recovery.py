@@ -240,6 +240,25 @@ class RestartRecovery:
             requests=dict(persisted.requests),
             queue_entries=queue_entries,
             retry_schedules=retry_schedules,
+            # Prompt A12 bug fix: this was previously omitted, so
+            # PersistentDownloadState's empty-dict default silently wiped
+            # EVERY durable partial-transfer row on EVERY restart once a
+            # caller persisted this recovered state via replace_all() --
+            # directly contradicting A8's own "valid PartialTransferState
+            # may survive recovery" rule (§84) and A9's "PAUSED survives
+            # restart only with a locally-validated partial" rule. Actual
+            # validity is always re-checked at dispatch time via
+            # plan_resume() regardless (A9's own architecture never trusts
+            # a persisted row blindly), so carrying every row forward
+            # unfiltered is safe: a row that is stale/invalid simply fails
+            # that later check and falls back to a full restart, exactly
+            # as if recovery had never run.
+            partial_transfers=dict(persisted.partial_transfers),
+            # Same reasoning as partial_transfers above: a completed-file
+            # record has no lifecycle-normalization decision to make (it is
+            # only ever written once, for an already-terminal COMPLETED
+            # task) and must simply survive every restart unfiltered.
+            completed_files=dict(persisted.completed_files),
         )
         return RecoveryResult(state=recovered_state, retry_seeds=tuple(retry_seeds), report=report)
 

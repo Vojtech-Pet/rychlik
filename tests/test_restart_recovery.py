@@ -99,6 +99,33 @@ def test_queue_paused_preserved_distinct_from_task_paused():
     assert result.state.queue_entries["qe-A"].state == QueueEntryState.PAUSED
 
 
+def test_recovered_state_carries_partial_transfers_forward(tmp_path):
+    """Regression (Prompt A12): recover()'s output must include the
+    original partial_transfers, unfiltered -- omitting them silently wipes
+    every durable partial-transfer row the moment a caller persists the
+    recovered state via replace_all(), contradicting A8's/A9's own
+    documented "a valid partial may survive recovery" guarantees. Actual
+    per-row validity is always re-checked at dispatch time regardless
+    (plan_resume() never trusts a persisted row blindly), so carrying
+    every row forward unfiltered is safe."""
+    import hashlib
+
+    from rychlik.core.partial_transfer import PartialTransferState, ValidatorKind
+
+    task = create_task("A", now=T0).mark_ready(now=T0).start_transfer(now=T0)
+    prefix = b"hello"
+    partial = PartialTransferState(
+        queue_entry_id="qe-A", task_id="A", attempt_count_snapshot=1,
+        temp_path=tmp_path / "video.part", final_path=tmp_path / "video",
+        durable_bytes=len(prefix), expected_total_bytes=None,
+        validator_kind=ValidatorKind.STRONG_ETAG, validator_value='"x"',
+        prefix_sha256=hashlib.sha256(prefix).hexdigest(), created_at=T0, updated_at=T0,
+    )
+    result = _recover(_state(tasks=[task], queue_entries=[_entry()], partial_transfers=[partial]))
+    assert "qe-A" in result.state.partial_transfers
+    assert result.state.partial_transfers["qe-A"] == partial
+
+
 def test_paused_with_valid_partial_stays_paused(tmp_path):
     import hashlib
 

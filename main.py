@@ -1,6 +1,7 @@
 """Entry point: DownloadManagerService (A10) backing a functional
-DownloadManagerWidget (A11). Functional GUI integration only -- no final
-visual design (see docs/FUNCTIONAL_GUI_INTEGRATION.md)."""
+DownloadManagerWidget (A11, hardened in A12). Functional GUI integration
+only -- no final visual design (see docs/FUNCTIONAL_GUI_INTEGRATION.md,
+docs/FUNCTIONAL_GUI_HARDENING.md)."""
 
 from __future__ import annotations
 
@@ -25,6 +26,12 @@ class MainWindow(QMainWindow):
         self.resize(900, 480)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        # §66-69: a truthful confirmation only when transfers are actually
+        # active; cancelling leaves the service running untouched (§68).
+        if not self._widget.confirm_close():
+            event.ignore()
+            return
+        self._widget.prepare_shutdown()
         # §12/§13: GUI never manipulates clean-shutdown metadata itself --
         # manager.stop() alone owns the correct A8/A9 shutdown ordering.
         self._widget.shutdown()

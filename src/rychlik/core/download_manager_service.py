@@ -135,6 +135,40 @@ class AddDownloadResult:
     queue_entry_id: str
 
 
+# --- completed-file privileged accessor (Prompt A12) ------------------------
+
+
+class CompletedFileStatus(Enum):
+    """Never a live domain/persistence object -- just a bounded outcome
+    plus (when AVAILABLE) an immutable, minimal CompletedFileInfo (§33/§34).
+    A `.completed_file()` caller (e.g. a Share/Open-Folder bridge) must
+    handle every one of these truthfully rather than assuming success."""
+
+    AVAILABLE = "AVAILABLE"
+    UNKNOWN_OCCURRENCE = "UNKNOWN_OCCURRENCE"
+    NOT_COMPLETED = "NOT_COMPLETED"
+    NO_RECORD = "NO_RECORD"
+    FILE_MISSING = "FILE_MISSING"
+    INVALID_RECORD = "INVALID_RECORD"
+
+
+@dataclass(frozen=True)
+class CompletedFileInfo:
+    queue_entry_id: str
+    task_id: str
+    local_path: Path
+    display_name: str
+    size_bytes: int | None
+    completed_at_utc: datetime
+
+
+@dataclass(frozen=True)
+class CompletedFileResult:
+    status: CompletedFileStatus
+    info: CompletedFileInfo | None = None
+    reason: str | None = None
+
+
 # --- events -----------------------------------------------------------------
 
 
@@ -658,6 +692,75 @@ class DownloadManagerService:
             request = self._requests.get(entry.task_id)
         progress = self._progress_registry.snapshot(queue_entry_id) if self._progress_registry else None
         return build_view_snapshot(queue_entry=entry, task=task, request=request, progress=progress)
+
+    # --- completed-file privileged accessor (Prompt A12) --------------------
+
+    def completed_file(self, queue_entry_id: str) -> CompletedFileResult:
+        """The ONLY way any caller (a future Share/Open-Folder bridge) may
+        learn a completed download's local file path -- the normal
+        DownloadViewSnapshot never carries it (§33, A7's own security
+        rule). Requires the EXACT queue occurrence to be COMPLETED, a
+        durable completion record to exist for it (§35), the record's
+        task_id to match (never confuses an old occurrence with a newer
+        one of the same task, §32/§110), the recorded path to resolve
+        inside its own request's destination_dir (the same ownership
+        philosophy as A9's partial-transfer validation, §37), and the file
+        to still actually exist on disk (§36) -- never guessed, never
+        fabricated, and this method only ever reads, never mutates, the
+        filesystem (§114)."""
+        self._require_running()
+        with self._runtime.state_lock:
+            entry = self._safe_get_entry(queue_entry_id)
+            if entry is None:
+                return CompletedFileResult(CompletedFileStatus.UNKNOWN_OCCURRENCE, reason="unknown queue_entry_id")
+            task = self._tasks.get(entry.task_id)
+            if task is None or task.state != DownloadTaskState.COMPLETED:
+                return CompletedFileResult(CompletedFileStatus.NOT_COMPLETED, reason="task is not COMPLETED")
+            task_id = entry.task_id
+            request = self._requests.get(task_id)
+
+        record = self._state_store.get_completed_file(queue_entry_id) if self._state_store is not None else None
+        if record is None:
+            return CompletedFileResult(
+                CompletedFileStatus.NO_RECORD,
+                reason="no durable completion record (a pre-A12 completion, or a crash between the "
+                "task-completed checkpoint and the completed-file checkpoint -- see docs/"
+                "FUNCTIONAL_GUI_HARDENING.md known limitations)",
+            )
+        if record.task_id != task_id:
+            return CompletedFileResult(CompletedFileStatus.INVALID_RECORD, reason="completion record identity mismatch")
+
+        if request is None:
+            return CompletedFileResult(
+                CompletedFileStatus.INVALID_RECORD, reason="no request registered to validate file ownership against"
+            )
+        try:
+            resolved_path = record.local_path.resolve()
+            expected_dir = request.destination_dir.resolve()
+        except OSError:
+            return CompletedFileResult(CompletedFileStatus.INVALID_RECORD, reason="completion path could not be resolved")
+        if resolved_path.parent != expected_dir:
+            return CompletedFileResult(
+                CompletedFileStatus.INVALID_RECORD, reason="completion path is outside its own destination directory"
+            )
+        if record.local_path.is_symlink():
+            return CompletedFileResult(
+                CompletedFileStatus.INVALID_RECORD, reason="completion path is a symlink, never trusted directly"
+            )
+        if not resolved_path.is_file():
+            return CompletedFileResult(CompletedFileStatus.FILE_MISSING, reason="the completed file no longer exists")
+
+        return CompletedFileResult(
+            CompletedFileStatus.AVAILABLE,
+            info=CompletedFileInfo(
+                queue_entry_id=record.queue_entry_id,
+                task_id=record.task_id,
+                local_path=resolved_path,
+                display_name=record.display_name,
+                size_bytes=record.size_bytes,
+                completed_at_utc=record.completed_at_utc,
+            ),
+        )
 
     # --- events (§50-§56, §107-§112) -----------------------------------------
 
