@@ -92,10 +92,11 @@ Evidence class: **physical**. Desktop side: production `DeviceModeController` wi
 4. **A16 physical transcode**: stages `Checking → Converting video → Connecting → Sending → Received` (15:26:31) → `RECEIVED`.
 5. **A14 / A17-E1 (user-observed)**: Choose app → a real installed target opened the file; More apps… opened the Android Sharesheet whose preview shows **`holiday.mp4`** (the emulator showed the internal `incoming-<uuid>.bin`). Both paths "worked" per the user.
 6. **New finding `A17-STALE-NSD-ONLINE`**: after the user left FriendSend, the phone's receiver port was closed but the desktop still listed the device `TRUSTED_ONLINE` (mDNS record not withdrawn); a send at 15:24:47 failed truthfully with `CONNECTION_FAILED` and no source damage. Re-sending after reopening FriendSend succeeded. Truthfulness of the *Online* label is the open point, not the send.
-7. **Intermittent, not reproduced**: `test_pair_dialog_qr_decodes_to_exact_code` failed once in one full-suite run; 12 isolated runs, 180 random payloads at 3/4/5 px per module and two later full runs (1106 passed) did not fail.
+7. **Physical regression of `e044c62` (stale NSD fix), 2026-09-28, same phone**: FriendSend opened → `TRUSTED_ONLINE` 15:45:02; FriendSend closed (mDNS record still present, same endpoint) → `TRUSTED_OFFLINE` 15:45:52, within one 20 s probe interval; reopened (new port) → `TRUSTED_ONLINE` 15:46:09; small MP4 → `RECEIVED` 15:46:17. `A17-STALE-NSD-ONLINE` CLOSED. The transient "Checking…" state was not caught in the log (coalesced with Online); it is covered by a unit test. Identity mismatch was not simulated physically (covered by the real-Dart impostor acceptance test).
+8. **Intermittent, not reproduced**: `test_pair_dialog_qr_decodes_to_exact_code` failed once in one full-suite run; 12 isolated runs, 180 random payloads at 3/4/5 px per module and two later full runs (1106 passed) did not fail.
 
 ## Validation debts
 
-`A9-CRASH-RANGE-E2E` CLOSED · `A14-PHYSICAL-ANDROID-SHARE-SMOKE` CLOSED (physical, user-observed target/Sharesheet) · `A15-PHYSICAL-MDNS-DISCOVERY` CLOSED · `A17` PASS · new `A17-STALE-NSD-ONLINE` OPEN.
+`A9-CRASH-RANGE-E2E` CLOSED · `A14-PHYSICAL-ANDROID-SHARE-SMOKE` CLOSED (physical, user-observed target/Sharesheet) · `A15-PHYSICAL-MDNS-DISCOVERY` CLOSED · `A17` PASS · `A17-STALE-NSD-ONLINE` CLOSED (`e044c62`, physically re-verified). Device Mode is frozen.
 
 `tools/emulator_driver/` and `tools/emulator_sink/` hold the scripts and test-app sources used for the emulator run (reference; the scripts contain paths of the original session).
