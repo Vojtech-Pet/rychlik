@@ -193,26 +193,31 @@ class HandoffController {
 
   Future<void> runStartupCleanup() => tempCache.sweepUntrackedOnStartup();
 
-  DateTime? _lastProgressAt;
-  int _lastProgressBytes = 0;
+  static const double _speedWindowSeconds = 0.4;
+  DateTime? _windowStartAt;
+  int _windowStartBytes = 0;
   double? _speed;
 
   void _onEvent(ReceiverEvent event) {
     switch (event.kind) {
       case ReceiverEventKind.progress:
         final now = DateTime.now();
-        if (_current.handoffId != event.handoffId || _lastProgressAt == null) {
+        if (_current.handoffId != event.handoffId || _windowStartAt == null) {
           _speed = null;
+          _windowStartAt = now;
+          _windowStartBytes = event.bytesReceived;
         } else {
-          final seconds = now.difference(_lastProgressAt!).inMicroseconds / 1e6;
-          final delta = event.bytesReceived - _lastProgressBytes;
-          if (seconds > 0.05 && delta >= 0) {
+          // Speed is measured over a window (not per event): the receiver emits an event per network chunk,
+          // often only milliseconds apart, and a per-event delta would be noise.
+          final seconds = now.difference(_windowStartAt!).inMicroseconds / 1e6;
+          final delta = event.bytesReceived - _windowStartBytes;
+          if (seconds >= _speedWindowSeconds && delta >= 0) {
             final instant = delta / seconds;
-            _speed = _speed == null ? instant : _speed! * 0.7 + instant * 0.3;
+            _speed = _speed == null ? instant : _speed! * 0.6 + instant * 0.4;
+            _windowStartAt = now;
+            _windowStartBytes = event.bytesReceived;
           }
         }
-        _lastProgressAt = now;
-        _lastProgressBytes = event.bytesReceived;
         final allBytesIn = event.totalBytes > 0 && event.bytesReceived >= event.totalBytes;
         _emit(
           _current.copyWith(

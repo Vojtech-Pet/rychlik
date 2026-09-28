@@ -86,7 +86,7 @@ void main() {
     receiver.emit(_progress(100, 1000));
     await settle();
     expect(c.current.bytesPerSecond, isNull); // one event: nothing to measure
-    await Future<void>.delayed(const Duration(milliseconds: 80));
+    await Future<void>.delayed(const Duration(milliseconds: 450));
     receiver.emit(_progress(500, 1000));
     await settle();
     expect(c.current.bytesPerSecond, isNotNull);
@@ -208,5 +208,22 @@ void main() {
 
   test('every state has an entry in the transition table', () {
     expect(allowedUiTransitions.keys.toSet(), AppState.values.toSet());
+  });
+
+  test('speed is measured even when progress events arrive only milliseconds apart (real receivers emit per chunk)', () async {
+    c.markPaired();
+    var bytes = 0;
+    final stop = DateTime.now().add(const Duration(milliseconds: 900));
+    while (DateTime.now().isBefore(stop)) {
+      bytes += 16384;
+      receiver.emit(_progress(bytes, 100000000));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    await settle();
+    final speed = c.current.bytesPerSecond;
+    expect(speed, isNotNull);
+    // ~16 KiB per ~10-12 ms => on the order of a megabyte per second; just assert a sane, positive magnitude
+    expect(speed!, greaterThan(200000));
+    expect(speed, lessThan(3000000));
   });
 }
