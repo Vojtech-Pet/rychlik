@@ -115,6 +115,7 @@ def _run(qapp, http_fixture_server, tmp_path, maker, name, expect_kind):
         controller = DeviceModeController(trust_store=trust_store, identity=identity, handoff_service=service, discovery=discovery)
         controller.start()
         discovery.on_found(DiscoveredFriendSendDevice(receiver.device_id, FriendSendEndpoint(receiver.host, receiver.port), 1, PROFILE))
+        assert _pump(qapp, lambda: any(r.can_send for r in controller.rows()), timeout=10)  # real pinned-TLS probe against the real receiver
 
         selector = DD.ShareSelectorDialog(artifact, controller)
         assert selector.device_button.isEnabled()
@@ -193,6 +194,7 @@ def test_gui_endpoint_churn_refreshes_endpoint_only_and_keeps_the_pin(qapp, http
         before = trust_store.get(receiver.device_id)
         trust_store.upsert(before.with_endpoint(FriendSendEndpoint(receiver.host, 1)))  # stale: the phone changed its port
         discovery.on_found(DiscoveredFriendSendDevice(receiver.device_id, FriendSendEndpoint(receiver.host, receiver.port), 1, PROFILE))
+        assert _pump(qapp, lambda: any(r.can_send for r in controller.rows()), timeout=10)
         dialog = DD.SendToDeviceDialog(artifact, controller)
         dialog.send_button.click()
         assert _pump(qapp, lambda: dialog.headline.text().startswith("Received by"), timeout=40)
@@ -210,13 +212,13 @@ def test_gui_identity_change_offers_only_forget_and_forgetting_removes_trust(qap
     impostor = FriendSendSecureDartHarness(tmp_path / "impostor")  # a different TLS identity answering at the discovered endpoint
     try:
         discovery.on_found(DiscoveredFriendSendDevice(receiver.device_id, FriendSendEndpoint(impostor.host, impostor.port), 1, PROFILE))
+        # the pinned-TLS reachability probe hits the impostor's different certificate: a real failed pin check
+        assert _pump(qapp, lambda: controller.row_for(receiver.device_id).state.name == "IDENTITY_CHANGED", timeout=15)
         dialog = DD.SendToDeviceDialog(artifact, controller)
-        dialog.send_button.click()
-        assert _pump(qapp, lambda: dialog.headline.text() == "Device identity changed", timeout=30), dialog.headline.text()
-        assert dialog.forget_button.isVisibleTo(dialog)
+        assert not dialog.send_button.isEnabled()  # never offered as a send target
+        assert "forget and pair again" in " ".join(l.text() for l in dialog.findChildren(DD.QLabel))
         labels = " ".join(b.text().lower() for b in dialog.findChildren(DD.QPushButton))
         assert "trust" not in labels and "accept" not in labels and "certificate" not in labels
-        assert controller.row_for(receiver.device_id).state.name == "IDENTITY_CHANGED"
         assert trust_store.get(receiver.device_id).tls_spki_sha256 == receiver.tls_spki_sha256  # never silently re-pinned
         assert not impostor_received(impostor)  # no media byte reached the impostor
         controller.forget_device(receiver.device_id)

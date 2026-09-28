@@ -22,12 +22,14 @@ from rychlik.share.share_link_service import ShareLinkService
 
 STATE_TEXT = {
     DeviceState.TRUSTED_ONLINE: "Trusted · Online",
+    DeviceState.TRUSTED_CHECKING: "Trusted · Checking…",
     DeviceState.TRUSTED_OFFLINE: "Trusted · Offline",
     DeviceState.IDENTITY_CHANGED: "Identity changed",
     DeviceState.UNPAIRED_DISCOVERED: "Not paired",
 }
 STATE_TONE = {
     DeviceState.TRUSTED_ONLINE: "success",
+    DeviceState.TRUSTED_CHECKING: "muted",
     DeviceState.TRUSTED_OFFLINE: "muted",
     DeviceState.IDENTITY_CHANGED: "error",
     DeviceState.UNPAIRED_DISCOVERED: "info",

@@ -24,7 +24,7 @@ def env(qapp, tmp_path):
     identity = DesktopIdentityStore(tmp_path / "id").load_or_create()
     store = FriendSendTrustStore(tmp_path / "trust.json")
     handoff, discovery = _FakeHandoff(), _FakeDiscovery()
-    c = DeviceModeController(trust_store=store, identity=identity, handoff_service=handoff, discovery=discovery)
+    c = DeviceModeController(trust_store=store, identity=identity, handoff_service=handoff, discovery=discovery, probe=lambda t: True, probe_async=False)
     c.start()
     media = tmp_path / "holiday.mp4"
     media.write_bytes(b"x" * 64)

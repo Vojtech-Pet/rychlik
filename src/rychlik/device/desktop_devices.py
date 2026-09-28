@@ -11,6 +11,9 @@ Rules:
     * When discovery reports a trusted device at a new endpoint, ONLY the endpoint metadata is updated
       (FriendSendTrustStore's `with_endpoint`); the TLS pin/identity are never touched. The pin is still
       verified before any media byte is sent.
+    * mDNS alone is not availability: TRUSTED_ONLINE additionally needs a successful pinned-TLS reachability probe
+      (TCP + handshake + SPKI pin check, no request, no media). A discovered-but-unprobed device is TRUSTED_CHECKING;
+      a failed probe or a CONNECTION_FAILED send degrades it to TRUSTED_OFFLINE until the next successful probe.
     * IDENTITY_CHANGED is set only from a real failed pin/identity check and can only be cleared by a
       later successful handoff or by forgetting the device. There is no "trust the new identity" path.
 """
@@ -18,17 +21,20 @@ Rules:
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
 from rychlik.device.contracts import FriendSendEndpoint
 from rychlik.device.security.discovery import DiscoveredFriendSendDevice
+from rychlik.device.security.secure_transport import TlsPinMismatchError
 from rychlik.device.security.trust_store import FriendSendTrustStore, TrustedFriendSendDevice
 
 
 class DeviceState(Enum):
     TRUSTED_ONLINE = "trusted_online"
+    TRUSTED_CHECKING = "trusted_checking"
     TRUSTED_OFFLINE = "trusted_offline"
     IDENTITY_CHANGED = "identity_changed"
     UNPAIRED_DISCOVERED = "unpaired_discovered"
@@ -58,12 +64,88 @@ def short_id(device_id: str) -> str:
 
 
 class DesktopDeviceDirectory:
-    def __init__(self, trust_store: FriendSendTrustStore, *, on_change: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        trust_store: FriendSendTrustStore,
+        *,
+        on_change: Callable[[], None] | None = None,
+        probe: Callable[[TrustedFriendSendDevice], bool] | None = None,
+        probe_interval_seconds: float = 20.0,
+        probe_async: bool = True,
+    ) -> None:
         self._trust_store = trust_store
         self._on_change = on_change
+        self._probe = probe
+        self._probe_interval = probe_interval_seconds
+        self._probe_async_enabled = probe_async
         self._lock = threading.Lock()
         self._discovered: dict[str, DiscoveredFriendSendDevice] = {}
         self._identity_changed: set[str] = set()
+        self._reachable: dict[str, bool] = {}  # device_id -> last probe result (absent = not probed yet)
+        self._stop = threading.Event()
+        self._loop: threading.Thread | None = None
+
+    # --- reachability probing ------------------------------------------------------------------------------
+
+    def start(self) -> None:
+        if self._probe is None or self._loop is not None:
+            return
+        self._stop.clear()
+        self._loop = threading.Thread(target=self._probe_loop, name="device-probe", daemon=True)
+        self._loop.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        loop, self._loop = self._loop, None
+        if loop is not None:
+            loop.join(timeout=5)
+
+    def _probe_loop(self) -> None:
+        while not self._stop.wait(self._probe_interval):
+            self.probe_all()
+
+    def probe_all(self) -> None:
+        with self._lock:
+            ids = list(self._discovered)
+        for device_id in ids:
+            self.probe_now(device_id)
+
+    def probe_now(self, device_id: str) -> bool | None:
+        """Blocking probe of a trusted, currently discovered device. Returns the result, or None if not applicable."""
+        trusted = self._trust_store.get(device_id)
+        with self._lock:
+            discovered = self._discovered.get(device_id)
+        if self._probe is None or trusted is None or discovered is None or discovered.security_profile != trusted.security_profile:
+            return None
+        try:
+            ok = bool(self._probe(trusted))
+        except TlsPinMismatchError:  # a real failed pin check: same meaning as in a failed send
+            self.mark_identity_changed(device_id)
+            ok = False
+        except Exception:  # noqa: BLE001 - any probe failure means "not reachable"
+            ok = False
+        with self._lock:
+            changed = self._reachable.get(device_id) != ok
+            self._reachable[device_id] = ok
+        if changed:
+            self._notify()
+        return ok
+
+    def _probe_async(self, device_id: str) -> None:
+        if self._probe is None:
+            return
+        if not self._probe_async_enabled:
+            self.probe_now(device_id)
+            return
+        threading.Thread(target=self.probe_now, args=(device_id,), name="device-probe-once", daemon=True).start()
+
+    def mark_unreachable(self, device_id: str) -> None:
+        """A real send hit CONNECTION_FAILED: stop claiming Online until a probe succeeds again."""
+        with self._lock:
+            changed = self._reachable.get(device_id) is not False
+            self._reachable[device_id] = False
+        if changed:
+            self._notify()
 
     def _notify(self) -> None:
         if self._on_change is not None:
@@ -73,13 +155,18 @@ class DesktopDeviceDirectory:
 
     def on_discovered(self, device: DiscoveredFriendSendDevice) -> None:
         with self._lock:
+            previous = self._discovered.get(device.device_id)
             self._discovered[device.device_id] = device
+            if previous is None or previous.endpoint != device.endpoint:
+                self._reachable.pop(device.device_id, None)  # new sighting/endpoint: must be probed again
         self._refresh_endpoint_if_trusted(device)
         self._notify()
+        self._probe_async(device.device_id)
 
     def on_removed(self, device_id: str) -> None:
         with self._lock:
             self._discovered.pop(device_id, None)
+            self._reachable.pop(device_id, None)
         self._notify()
 
     def _refresh_endpoint_if_trusted(self, discovered: DiscoveredFriendSendDevice) -> bool:
@@ -129,8 +216,11 @@ class DesktopDeviceDirectory:
             if trusted.device_id in self._identity_changed:
                 return DeviceState.IDENTITY_CHANGED
             discovered = self._discovered.get(trusted.device_id)
+            reachable = self._reachable.get(trusted.device_id)
         if discovered is not None and discovered.security_profile == trusted.security_profile:
-            return DeviceState.TRUSTED_ONLINE
+            if self._probe is None or reachable is True:
+                return DeviceState.TRUSTED_ONLINE
+            return DeviceState.TRUSTED_CHECKING if reachable is None else DeviceState.TRUSTED_OFFLINE
         return DeviceState.TRUSTED_OFFLINE
 
     def rows(self) -> list[DeviceRow]:

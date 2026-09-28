@@ -113,7 +113,7 @@ def render_all(out: Path, tmp: Path, *, quick: bool = False) -> list[Path]:
     store.upsert(_trusted("moto", "Moto G84", "192.168.1.31"))
     store.upsert(_trusted("tab", "Galaxy Tab", "192.168.1.44"))
     handoff, discovery = _Handoff(), _Discovery()
-    controller = DeviceModeController(trust_store=store, identity=identity, handoff_service=handoff, discovery=discovery)
+    controller = DeviceModeController(trust_store=store, identity=identity, handoff_service=handoff, discovery=discovery, probe=lambda t: True, probe_async=False)
     controller.start()
     discovery.on_found(DiscoveredFriendSendDevice("pixel", FriendSendEndpoint("192.168.1.20", 41000), 1, PROFILE))
     discovery.on_found(DiscoveredFriendSendDevice("tab", FriendSendEndpoint("192.168.1.44", 41000), 1, PROFILE))

@@ -146,6 +146,8 @@ class DeviceModeController(QObject):
         discovery=None,
         data_dir: Path | None = None,
         pairing_manager_factory=None,
+        probe=None,
+        probe_async: bool = True,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -168,7 +170,14 @@ class DeviceModeController(QObject):
 
             discovery = FriendSendDiscoveryService()
         self._discovery = discovery
-        self._directory = DesktopDeviceDirectory(trust_store, on_change=self.devices_changed.emit)
+        if probe is None:
+            from rychlik.device.security.secure_transport import connect_and_verify_pin
+
+            def probe(trusted) -> bool:  # TCP + TLS handshake + SPKI pin check; no request, no media
+                connect_and_verify_pin(trusted.endpoint_host, trusted.endpoint_port, trusted.tls_spki_sha256, timeout=3.0).close()
+                return True
+
+        self._directory = DesktopDeviceDirectory(trust_store, on_change=self.devices_changed.emit, probe=probe, probe_async=probe_async)
         self._pairing_factory = pairing_manager_factory
         self._pairing_manager = None
         self._token: int | None = None
@@ -181,6 +190,7 @@ class DeviceModeController(QObject):
             return
         self._started = True
         self._handoff.start()
+        self._directory.start()
         self._token = self._handoff.subscribe(self._on_handoff_event)
         self._discovery.subscribe(on_found=self._directory.on_discovered, on_removed=self._directory.on_removed)
         try:
@@ -199,6 +209,7 @@ class DeviceModeController(QObject):
         try:
             self._discovery.stop()
         finally:
+            self._directory.stop()
             self._handoff.stop()
 
     # --- devices -------------------------------------------------------------------------------------------
@@ -273,6 +284,8 @@ class DeviceModeController(QObject):
             if snapshot is not None and event.device_id:
                 if event.kind == DeviceHandoffEventKind.HANDOFF_FAILED and snapshot.failure_code in _IDENTITY_CODES:
                     self._directory.mark_identity_changed(event.device_id)
+                elif event.kind == DeviceHandoffEventKind.HANDOFF_FAILED and snapshot.failure_code == HandoffErrorCode.CONNECTION_FAILED:
+                    self._directory.mark_unreachable(event.device_id)
                 elif event.kind == DeviceHandoffEventKind.HANDOFF_RECEIVED:
                     self._directory.clear_identity_changed(event.device_id)
         if event.handoff_id:

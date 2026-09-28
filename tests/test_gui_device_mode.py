@@ -152,7 +152,7 @@ def controller(qapp, tmp_path):
     store = FriendSendTrustStore(tmp_path / "trust.json")
     store.upsert(_trusted())
     handoff, discovery = _FakeHandoff(), _FakeDiscovery()
-    c = DeviceModeController(trust_store=store, identity=identity, handoff_service=handoff, discovery=discovery)
+    c = DeviceModeController(trust_store=store, identity=identity, handoff_service=handoff, discovery=discovery, probe=lambda t: True, probe_async=False)
     c.start()
     yield c, handoff, discovery, store
     c.stop()
@@ -167,7 +167,7 @@ def test_start_wires_discovery_and_handoff_and_stop_tears_down(controller):
 
 def test_discovery_problem_is_reported_not_fatal(qapp, tmp_path):
     identity = DesktopIdentityStore(tmp_path / "id").load_or_create()
-    c = DeviceModeController(trust_store=FriendSendTrustStore(tmp_path / "t.json"), identity=identity, handoff_service=_FakeHandoff(), discovery=_FakeDiscovery(fail=True))
+    c = DeviceModeController(trust_store=FriendSendTrustStore(tmp_path / "t.json"), identity=identity, handoff_service=_FakeHandoff(), discovery=_FakeDiscovery(fail=True), probe=lambda t: True, probe_async=False)
     problems = []
     c.discovery_problem.connect(problems.append)
     c.start()
