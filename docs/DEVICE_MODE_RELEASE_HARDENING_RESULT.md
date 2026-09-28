@@ -379,3 +379,10 @@ A9-CRASH-RANGE-E2E: CLOSED
 A14-PHYSICAL-ANDROID-SHARE-SMOKE: OPEN (emulator does not satisfy the physical-device requirement)
 A15-PHYSICAL-MDNS-DISCOVERY: OPEN (emulator does not satisfy the physical-device requirement)
 NEXT REQUIRED ACTION: physical Android A17 validation only.
+
+PLANNED POST-A17 FEATURE (not implemented, not scoped, not part of A17): FriendSend Direct Share Target Picker
+After FriendSend receives and verifies media, it should resolve installed Android apps that can handle ACTION_SEND for the received MIME type and present a simple in-app destination picker (Messenger, WhatsApp, Telegram, Signal, etc.). Selecting an app launches a targeted ACTION_SEND intent with the existing content:// FileProvider URI. The selected target application remains responsible for showing its own recipient/contact chooser. FriendSend does not access friend lists, contacts, private APIs, accessibility automation, or social-app internals. A permanent "More apps..." fallback opens the normal Android Sharesheet.
+Implementation would need a ShareTargetResolver, Android package-visibility <queries> declarations, MIME-aware filtering, safe package targeting, and fallback behavior. It must remain independent of Device Mode transport/security. A separate prompt is opened only after A17 passes.
+
+PHYSICAL VERIFICATION POINT (not new debt): Sharesheet filename
+The FileProvider already returns DISPLAY_NAME = the real received name (verified by an in-process query). On the physical phone, confirm whether the system Sharesheet preview chip shows the provider DISPLAY_NAME or derives the name from the URI path. Fold this into the A14-PHYSICAL-ANDROID-SHARE-SMOKE run.
