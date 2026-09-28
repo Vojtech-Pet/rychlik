@@ -359,6 +359,18 @@ BUGS FOUND:
      documenting the underlying chunk-size property in the test file
      itself rather than re-discovering it silently.
 
+A17 ADDENDUM (2026-09-28):
+  The "no combined real-process-crash + partial-resume E2E test" limitation
+  noted below was closed during Prompt A17 (Device Mode Release Hardening),
+  not in this phase -- validation debt closed during A17, not retroactively
+  claimed here. See tests/test_a9_crash_range_e2e.py
+  (test_a9_crash_range_e2e) and docs/DEVICE_MODE_RELEASE_HARDENING_RESULT.md
+  for the full combined-chain evidence (real SIGKILL against a real
+  Range/ETag-capable fixture route, durable checkpoint observed before the
+  kill, restart recovery, and a real subsequent HTTP Range/If-Range request
+  using the persisted durable_bytes/validator). docs/OPEN_VALIDATION_DEBT.md
+  now records A9-CRASH-RANGE-E2E as CLOSED.
+
 KNOWN LIMITATIONS:
   no exactly-once claim -- SQLite + filesystem + HTTP are not one atomic
     transaction (inherited from A8, restated here for this phase's
@@ -371,6 +383,7 @@ KNOWN LIMITATIONS:
   no combined real-process-crash + partial-resume E2E test -- explicitly
     scoped out of this phase; the underlying PAUSED-with-valid-partial
     recovery logic is covered by focused non-subprocess tests instead
+    (CLOSED during Prompt A17 -- see A17 ADDENDUM above)
   request_resume() while QueueEntry is queue-paused has no expiry/timeout
     (matches the prompt's own "simple and deterministic" suggested policy)
   no GUI Pause/Resume controls

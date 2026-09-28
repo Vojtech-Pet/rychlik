@@ -9,10 +9,10 @@ executed, never merely because its component parts pass separately.
 
 ## A9-CRASH-RANGE-E2E
 
-**Status:** OPEN
+**Status:** CLOSED (Prompt A17, 2026-09-28)
 **Blocking A10:** NO
 **Blocking functional GUI (A11):** NO
-**Blocking beta/release gate:** YES
+**Blocking beta/release gate:** N/A -- closed
 
 **Description:** A real combined end-to-end scenario —
 
@@ -65,6 +65,25 @@ durable partial checkpoint (not just `TRANSFERRING`), `SIGKILL`s it, then
 in a fresh process runs recovery and normal dispatch and asserts the
 resulting real HTTP request carries `Range: bytes=<durable_bytes>-` (not
 `bytes=0-`) before completing byte-exact.
+
+**Closed by:** `tests/test_a9_crash_range_e2e.py::test_a9_crash_range_e2e`
+(Prompt A17). A real child process (`tests/_a9_crash_range_worker.py`)
+downloads against a real `/resumable/<key>` fixture route with ETag
+`"a17-crash-range-v1"` and a small (50,000-byte) checkpoint threshold. The
+parent waits for real evidence of a durable `PartialTransferState` with
+`durable_bytes > 0` and a captured `prefix_sha256`/validator committed to
+the real SQLite file (also confirming the raw `.part` file on disk was
+`>= durable_bytes`, proving recovery cannot trust uncheckpointed bytes),
+then `SIGKILL`s the child. A fresh process opens the same database,
+`RestartRecovery` moves the task `TRANSFERRING -> READY` with
+`attempt_count` preserved at `1` and the durable partial/validator carried
+forward intact, and a brand-new dispatch in that same process issues a
+real HTTP request the fixture server actually observes with
+`Range: bytes=<durable_bytes>-` and `If-Range: "a17-crash-range-v1"`
+(never `bytes=0-`), completing `COMPLETED` with `attempt_count == 2`, a
+byte-exact final file, and all partial/queue metadata cleaned up. Run 6x
+consecutively with no flake, and as part of 3 full clean desktop suite
+runs (907/907 each).
 
 ---
 
@@ -166,6 +185,17 @@ with the received file, backed by a real `FileProvider` `content://`
 grant on a real Android OS -- something no host-side Dart harness or
 cross-language socket test can prove by itself (Prompt A14 §97).
 
+**A17 attempt (2026-09-28):** Prompt A17 was explicitly scoped as the
+release-hardening gate meant to close this debt, and unlike A14/A15 does
+NOT permit reporting `COMPLETE`/`PASS` while it remains open. `adb devices
+-l` returned no attached devices and no `emulator` binary was present in
+this environment (`emulator -list-avds` failed: command not found) --
+confirmed again at A17 time, same constraint as A14/A15. A17 therefore
+closed everything it could without hardware (see
+`docs/DEVICE_MODE_RELEASE_HARDENING_RESULT.md`, STATUS: BLOCKED) and left
+this item OPEN and unmodified rather than closing it on host-side evidence
+alone. See `docs/PHYSICAL_ANDROID_VALIDATION.md` for the recorded attempt.
+
 ---
 
 ## A15-PHYSICAL-MDNS-DISCOVERY
@@ -202,6 +232,10 @@ attaching a physical device via `adb`) and confirming a real
 discoverable by a real desktop `zeroconf` browser on the same LAN, with
 the correct `device_id`/`protocol_version`/`security_profile` TXT
 attributes.
+
+**A17 attempt (2026-09-28):** same environment constraint recorded above
+for `A14-PHYSICAL-ANDROID-SHARE-SMOKE` -- no physical device or emulator
+available in this environment. Left OPEN.
 
 ---
 
