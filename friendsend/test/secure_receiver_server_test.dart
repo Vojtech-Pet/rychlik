@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart' as dcrypto;
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:friendsend/platform/lan_address.dart';
 import 'package:friendsend/receiver/receiver_server.dart' show ReceiverConfig;
 import 'package:friendsend/receiver/temp_cache.dart';
 import 'package:friendsend/security/auth_challenge.dart';
@@ -366,5 +367,33 @@ void main() {
     for (final forbidden in ['whatsapp', 'messenger', 'telegram']) {
       expect(profiles.any((p) => p.toLowerCase().contains(forbidden)), isFalse);
     }
+  });
+
+  test('a receiver started with the production bind address accepts TCP on a non-loopback interface (physical-phone bug)', () async {
+    final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4, includeLoopback: false, includeLinkLocal: false);
+    final lan = [for (final i in interfaces) ...i.addresses].where((a) => !a.isLoopback).toList();
+    if (lan.isEmpty) {
+      markTestSkipped('no non-loopback IPv4 interface on this machine');
+      return;
+    }
+    final generated = SelfSignedCertificate.generate(commonName: 'bind-test');
+    final identity = TlsIdentity(certificatePem: generated.certificatePem, privateKeyPem: generated.privateKeyPem, spkiSha256: const []);
+    final lanServer = SecureFriendSendReceiverServer(
+      config: ReceiverConfig(deviceId: 'd3', displayName: 'x'),
+      tempCache: TempCache(root),
+      tlsIdentity: identity,
+      authChallengeManager: challengeManager,
+    );
+    await lanServer.start(address: receiverBindAddress);
+    try {
+      final socket = await Socket.connect(lan.first, lanServer.port, timeout: const Duration(seconds: 3));
+      await socket.close();
+    } finally {
+      await lanServer.stop();
+    }
+    // the default (loopback-only) server is NOT reachable that way -- this is what shipped before the fix
+    await server.stop();
+    await server.start();
+    await expectLater(Socket.connect(lan.first, server.port, timeout: const Duration(seconds: 2)), throwsA(isA<SocketException>()));
   });
 }

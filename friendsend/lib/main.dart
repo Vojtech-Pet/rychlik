@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'handoff/handoff_controller.dart';
 import 'identity/device_identity.dart';
+import 'platform/lan_address.dart';
 import 'platform/share_bridge.dart';
 import 'platform/share_targets.dart';
 import 'receiver/receiver_server.dart' show ReceiverConfig;
@@ -46,7 +47,7 @@ Future<void> main() async {
     tlsIdentity: tlsIdentity,
     authChallengeManager: challengeManager,
   );
-  await receiver.start();
+  await receiver.start(address: receiverBindAddress);
 
   // Best-effort mDNS advertisement (Prompt A15 §70): only while the
   // secure receiver is actually bound and accepting connections. A
@@ -65,7 +66,7 @@ Future<void> main() async {
     deviceId: identity.deviceId,
     displayName: identity.displayName,
     friendSendTlsSpkiSha256: tlsIdentity.spkiSha256,
-    friendSendEndpointHost: receiver.host,
+    friendSendEndpointHost: await bestLanIpv4() ?? receiver.host,
     friendSendEndpointPort: receiver.port,
     trustStore: trustStore,
   );
