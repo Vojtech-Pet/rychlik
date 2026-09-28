@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from PySide6.QtCore import QSettings
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from rychlik.core.download_manager_service import DownloadManagerService, ManagerFaultedError
@@ -25,6 +26,8 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Rýchlik")
     app.setOrganizationName("Rychlik")
+    app.setDesktopFileName("rychlik")
+    app.setWindowIcon(QIcon(str(Path(__file__).parent / "src" / "rychlik" / "resources" / "rychlik.svg")))
     themes = ThemeManager(app, QSettings("Rychlik", "Rychlik"))
 
     manager = DownloadManagerService()
