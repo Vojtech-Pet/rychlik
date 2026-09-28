@@ -18,6 +18,17 @@ public class SinkActivity extends Activity {
         Intent i = getIntent();
         Uri uri = i.getParcelableExtra(Intent.EXTRA_STREAM);
         String report;
+        CharSequence sharedText = i.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        if (uri == null && sharedText != null) {
+            // text share: report the exact received string (bracketed so trailing whitespace is visible)
+            report = "SINK_TEXT text=[" + sharedText + "] length=" + sharedText.length() + " type=" + i.getType() + " component=" + i.getComponent();
+            Log.i("ShareSink", report);
+            TextView tv = new TextView(this);
+            tv.setText(report);
+            tv.setTextSize(12);
+            setContentView(tv);
+            return;
+        }
         try {
             String name = "?"; long size = -1;
             try (Cursor c = getContentResolver().query(uri, null, null, null, null)) {
