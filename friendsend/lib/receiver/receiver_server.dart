@@ -274,6 +274,8 @@ class FriendSendReceiverServer implements FriendSendReceiverLike {
             kind: ReceiverEventKind.progress,
             bytesReceived: received,
             totalBytes: offer.sizeBytes,
+            mimeType: offer.mimeType,
+            preferredFilename: offer.preferredFilename ?? offer.displayName,
           ),
         );
       }

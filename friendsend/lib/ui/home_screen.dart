@@ -1,193 +1,209 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../handoff/handoff_controller.dart';
 import '../identity/device_identity.dart';
+import '../platform/share_bridge.dart';
+import '../platform/share_targets.dart';
+import '../security/desktop_trust_store.dart';
 import '../security/secure_pairing_manager.dart';
+import 'screens/pairing_screen.dart';
+import 'screens/target_picker.dart';
+import 'screens/transfer_screens.dart';
+import 'screens/trusted_screen.dart';
 
-/// Minimal functional UI (Prompt A14 §16, §74-82, §148; Prompt A15 §16:
-/// no final design polish -- this proves the workflow, not the brand).
+/// Chooses the approved screen for the controller's presentation state. Screens render controller state; they
+/// never invent one (Verifying, Received, Choosing-target and Handoff-accepted all come from real transitions).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
     required this.identity,
     required this.pairingManager,
     required this.controller,
+    this.trustStore,
+    this.targetProvider = const NoShareTargets(),
   });
 
   final DeviceIdentity identity;
   final SecurePairingManager pairingManager;
   final HandoffController controller;
+  final DesktopTrustStore? trustStore;
+  final ShareTargetProvider targetProvider;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final _pasteController = TextEditingController();
-  String? _pairingError;
+  StreamSubscription<HandoffUiSnapshot>? _sub;
+  bool _pickerOpen = false;
+  TrustedDesktop? _desktop;
+
+  @override
+  void initState() {
+    super.initState();
+    _sub = widget.controller.snapshots.listen(_onState);
+    _loadDesktop();
+    if (widget.controller.current.state == AppState.choosingTarget) _scheduleSheet();
+  }
 
   @override
   void dispose() {
-    _pasteController.dispose();
+    _sub?.cancel();
     super.dispose();
   }
 
-  Future<void> _completePairing() async {
-    try {
-      final payload = widget.pairingManager.parse(_pasteController.text.trim());
-      await widget.pairingManager.completePairing(payload);
-      if (!mounted) return;
-      setState(() => _pairingError = null);
-      widget.controller.markPaired();
-    } on PairingFormatException catch (e) {
-      if (!mounted) return;
-      setState(() => _pairingError = e.message);
-    } on PairingExpiredException {
-      if (!mounted) return;
-      setState(() => _pairingError = 'Pairing payload has expired. Ask Rýchlik for a fresh one.');
-    } on PairingUnsupportedProtocolException catch (e) {
-      if (!mounted) return;
-      setState(() => _pairingError = 'Unsupported protocol version: ${e.version}');
-    } on PairingProofMismatchException {
-      if (!mounted) return;
-      setState(() => _pairingError = 'Pairing could not be verified. Please try again.');
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _pairingError = 'Pairing failed. Please try again.');
+  Future<void> _loadDesktop() async {
+    final desktops = await widget.trustStore?.allDesktops();
+    if (mounted) setState(() => _desktop = (desktops == null || desktops.isEmpty) ? null : desktops.first);
+  }
+
+  void _onState(HandoffUiSnapshot s) {
+    if (s.state == AppState.ready) _loadDesktop();
+    if (s.state == AppState.choosingTarget) _scheduleSheet();
+  }
+
+  void _scheduleSheet() {
+    if (_pickerOpen) return;
+    _pickerOpen = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _showPicker());
+  }
+
+  Future<void> _showPicker() async {
+    if (!mounted) {
+      _pickerOpen = false;
+      return;
+    }
+    final s = widget.controller.current;
+    final targetsFuture = widget.targetProvider.targetsFor(s.mimeType ?? 'application/octet-stream');
+    final result = await showModalBottomSheet<PickerResult>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => FutureBuilder<List<ShareTarget>>(
+        future: targetsFuture,
+        builder: (_, snap) => TargetPickerSheet(
+          fileName: s.displayName ?? 'Received file',
+          sizeBytes: s.totalBytes > 0 ? s.totalBytes : s.bytesReceived,
+          mimeType: s.mimeType,
+          targets: snap.data ?? const [],
+          loading: snap.connectionState != ConnectionState.done,
+        ),
+      ),
+    );
+    _pickerOpen = false;
+    if (!mounted) return;
+    final current = widget.controller.current;
+    if (current.state != AppState.choosingTarget) return;
+    switch (result?.action) {
+      case PickerAction.discard:
+        await _discard();
+      case PickerAction.systemSheet:
+        await _openSystemSheet();
+      case PickerAction.target:
+        widget.controller.cancelChoosing(); // targeted send is wired natively in the target-picker stage
+      case null:
+        widget.controller.cancelChoosing();
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('FriendSend')),
-      body: StreamBuilder<HandoffUiSnapshot>(
-        stream: widget.controller.snapshots,
-        initialData: widget.controller.current,
-        builder: (context, snapshot) {
-          final state = snapshot.data ?? widget.controller.current;
-          return Padding(padding: const EdgeInsets.all(16), child: _buildBody(state));
-        },
+  Future<void> _openSystemSheet() async {
+    final s = widget.controller.current;
+    final path = s.filePath;
+    if (path == null) {
+      widget.controller.cancelChoosing();
+      return;
+    }
+    final result = await widget.controller.shareCurrentFile(path, s.displayName ?? 'received', s.mimeType ?? 'application/octet-stream');
+    if (result != ShareResult.opened) {
+      widget.controller.cancelChoosing();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Couldn’t open the Android Sharesheet. The file is still here.')));
+      }
+    }
+  }
+
+  Future<void> _discard() async {
+    final s = widget.controller.current;
+    if (s.handoffId != null && s.filePath != null) await widget.controller.discardCurrent(s.handoffId!, s.filePath!);
+  }
+
+  Future<void> _completePairing(String code) async {
+    widget.controller.beginPairing();
+    try {
+      final payload = widget.pairingManager.parse(code);
+      await widget.pairingManager.completePairing(payload);
+      if (!mounted) return;
+      widget.controller.markPaired();
+    } on PairingFormatException {
+      widget.controller.pairingFailed('This does not look like a pairing code.');
+    } on PairingExpiredException {
+      widget.controller.pairingFailed('This code expired. Create a new pairing code in Rýchlik.');
+    } on PairingUnsupportedProtocolException {
+      widget.controller.pairingFailed('This code is from a different version of Rýchlik. Update both apps and try again.');
+    } on PairingProofMismatchException {
+      widget.controller.pairingFailed('Pairing couldn’t be verified. Create a new code and try again.');
+    } catch (_) {
+      widget.controller.pairingFailed('Pairing failed. Create a new code and try again.');
+    }
+  }
+
+  void _openTrusted() {
+    final desktop = _desktop;
+    final store = widget.trustStore;
+    if (desktop == null || store == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (ctx) => TrustedComputerScreen(
+          desktop: desktop,
+          onForget: () async {
+            await store.forget(desktop.desktopInstanceId);
+            widget.controller.markForgotten();
+            if (ctx.mounted) Navigator.of(ctx).popUntil((r) => r.isFirst);
+          },
+        ),
       ),
     );
   }
 
-  Widget _buildBody(HandoffUiSnapshot state) {
-    switch (state.state) {
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<HandoffUiSnapshot>(
+      stream: widget.controller.snapshots,
+      initialData: widget.controller.current,
+      builder: (context, snapshot) => _screenFor(snapshot.data ?? widget.controller.current),
+    );
+  }
+
+  Widget _screenFor(HandoffUiSnapshot s) {
+    switch (s.state) {
       case AppState.unpaired:
-        return _pairingView();
-      case AppState.paired:
-        return _readyView();
+        return PairingScreen(onPair: _completePairing, error: s.pairingError);
+      case AppState.pairing:
+        return PairingScreen(onPair: _completePairing, busy: true);
+      case AppState.ready:
+        return ReadyScreen(computerName: _desktop?.displayName ?? 'Rýchlik', onOpenComputer: _desktop == null ? null : _openTrusted);
       case AppState.receiving:
-        return _receivingView(state);
-      case AppState.received:
-        return _receivedView(state);
-      case AppState.error:
-        return _errorView(state);
-    }
-  }
-
-  Widget _pairingView() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Text('Pair FriendSend with Rýchlik to receive a file.', key: Key('unpaired_message')),
-        const SizedBox(height: 12),
-        TextField(
-          key: const Key('pairing_paste_field'),
-          controller: _pasteController,
-          maxLines: 4,
-          decoration: const InputDecoration(labelText: 'Paste pairing payload'),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            ElevatedButton(
-              key: const Key('pairing_paste_button'),
-              onPressed: () {},
-              child: const Text('Paste'),
-            ),
-            const SizedBox(width: 8),
-            ElevatedButton(
-              key: const Key('pairing_pair_button'),
-              onPressed: _completePairing,
-              child: const Text('Pair'),
-            ),
-          ],
-        ),
-        if (_pairingError != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              _pairingError!,
-              key: const Key('pairing_error'),
-              style: const TextStyle(color: Colors.red),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _readyView() {
-    return Text(
-      'Ready to receive on ${widget.identity.displayName}',
-      key: const Key('ready_message'),
-    );
-  }
-
-  Widget _receivingView(HandoffUiSnapshot state) {
-    final fraction = state.progressFraction;
-    final percent = fraction == null ? 0 : (fraction * 100).round();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text('Receiving...', key: const Key('receiving_message')),
-        const SizedBox(height: 8),
-        Text('$percent %', key: const Key('receiving_percent')),
-        Text('${state.bytesReceived} / ${state.totalBytes} bytes'),
-        const SizedBox(height: 8),
-        LinearProgressIndicator(value: fraction),
-        const SizedBox(height: 8),
-        ElevatedButton(
-          key: const Key('cancel_button'),
-          onPressed: () {
-            final id = state.handoffId;
-            if (id != null) {
-              widget.controller.receiver.requestCancel(id);
-            }
+        return ReceivingScreen(
+          state: s,
+          onCancel: () {
+            final id = s.handoffId;
+            if (id != null) widget.controller.receiver.requestCancel(id);
           },
-          child: const Text('Cancel'),
-        ),
-      ],
-    );
-  }
-
-  Widget _receivedView(HandoffUiSnapshot state) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(state.displayName ?? 'Received file', key: const Key('received_filename')),
-        Text('${state.bytesReceived} bytes'),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            ElevatedButton(key: const Key('share_button'), onPressed: () {}, child: const Text('Share')),
-            const SizedBox(width: 8),
-            ElevatedButton(key: const Key('discard_button'), onPressed: () {}, child: const Text('Discard')),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _errorView(HandoffUiSnapshot state) {
-    return Text(
-      'Error: ${state.errorCode?.wireName ?? 'unknown'}',
-      key: const Key('error_message'),
-      style: const TextStyle(color: Colors.red),
-    );
+        );
+      case AppState.verifying:
+        return VerifyingScreen(state: s);
+      case AppState.received:
+      case AppState.choosingTarget:
+        return ReceivedScreen(state: s, onChooseApp: widget.controller.chooseApp, onDiscard: _discard);
+      case AppState.handoffAccepted:
+        return HandoffAcceptedScreen(state: s, onDone: () => widget.controller.done(), onSendAgain: widget.controller.chooseApp);
+      case AppState.cancelled:
+        return CancelledScreen(onDone: () => widget.controller.done());
+      case AppState.error:
+        return ErrorScreen(state: s, onDone: () => widget.controller.done());
+    }
   }
 }

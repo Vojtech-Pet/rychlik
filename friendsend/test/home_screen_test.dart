@@ -18,6 +18,7 @@ import 'package:friendsend/security/secure_receiver_server.dart';
 import 'package:friendsend/security/self_signed_cert.dart';
 import 'package:friendsend/security/tls_identity.dart';
 import 'package:friendsend/ui/home_screen.dart';
+import 'package:friendsend/ui/theme/fs_theme.dart';
 
 String _toHex(List<int> bytes) => bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
@@ -90,6 +91,7 @@ Future<void> _pumpHome(
 }) async {
   await tester.pumpWidget(
     MaterialApp(
+      theme: FsTheme.build(Brightness.dark),
       home: HomeScreen(
         identity: const DeviceIdentity(deviceId: 'd1', displayName: 'Test Phone'),
         pairingManager: pairingManager,
@@ -145,13 +147,16 @@ void main() {
   testWidgets('unpaired shows the truthful empty state (§78)', (tester) async {
     await _pumpHome(tester, controller: controller, pairingManager: pairingManager);
     expect(find.byKey(const Key('unpaired_message')), findsOneWidget);
-    expect(find.text('Pair FriendSend with Rýchlik to receive a file.'), findsOneWidget);
+    expect(find.text('Connect to Rýchlik'), findsOneWidget);
+    expect(find.text('Paste code from Rýchlik'), findsOneWidget);
   });
 
   testWidgets('malformed pairing paste shows a bounded error, never a raw crash (§18)', (tester) async {
     await _pumpHome(tester, controller: controller, pairingManager: pairingManager);
     await tester.enterText(find.byKey(const Key('pairing_paste_field')), 'not json at all');
+    await tester.pump();
     await tester.tap(find.byKey(const Key('pairing_pair_button')));
+    await tester.pump();
     await tester.pump();
     expect(find.byKey(const Key('pairing_error')), findsOneWidget);
     expect(find.byKey(const Key('unpaired_message')), findsOneWidget);
@@ -198,6 +203,7 @@ void main() {
       };
 
       await tester.enterText(find.byKey(const Key('pairing_paste_field')), jsonEncode(payload));
+    await tester.pump();
       await tester.tap(find.byKey(const Key('pairing_pair_button')));
       await Future<void>.delayed(const Duration(milliseconds: 200));
       await bootstrap.stop();
@@ -207,7 +213,7 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const Key('ready_message')), findsOneWidget);
-    expect(find.textContaining('Test Phone'), findsOneWidget);
+    expect(find.text('Ready to receive'), findsOneWidget);
   });
 
   testWidgets('expired pairing payload shows a bounded error (§19)', (tester) async {
@@ -224,7 +230,9 @@ void main() {
       'expires_at_utc': DateTime.now().toUtc().subtract(const Duration(minutes: 5)).toIso8601String(),
     };
     await tester.enterText(find.byKey(const Key('pairing_paste_field')), jsonEncode(payload));
+    await tester.pump();
     await tester.tap(find.byKey(const Key('pairing_pair_button')));
+    await tester.pump();
     await tester.pump();
     expect(find.byKey(const Key('pairing_error')), findsOneWidget);
   });
@@ -329,7 +337,7 @@ void main() {
 
     expect(find.byKey(const Key('received_filename')), findsOneWidget);
     expect(find.text('clip.mp4'), findsOneWidget);
-    expect(find.byKey(const Key('share_button')), findsOneWidget);
+    expect(find.byKey(const Key('choose_app_button')), findsOneWidget);
     expect(find.byKey(const Key('discard_button')), findsOneWidget);
   });
 

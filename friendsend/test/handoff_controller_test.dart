@@ -46,9 +46,9 @@ void main() {
     expect(controller.current.state, AppState.unpaired);
   });
 
-  test('markPaired transitions to paired', () {
+  test('markPaired transitions to ready', () {
     controller.markPaired();
-    expect(controller.current.state, AppState.paired);
+    expect(controller.current.state, AppState.ready);
   });
 
   test('a real receive drives the controller from paired -> receiving -> received', () async {
@@ -88,7 +88,9 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 100));
     await sub.cancel();
 
-    expect(states.any((s) => s.state == AppState.receiving), isTrue);
+    // A single announced chunk already carries every byte, so the honest state is `verifying` (hash still
+    // running), never a fake `receiving`.
+    expect(states.any((s) => s.state == AppState.receiving || s.state == AppState.verifying), isTrue);
     expect(controller.current.state, AppState.received);
     expect(controller.current.bytesReceived, bytes.length);
   });
@@ -105,7 +107,7 @@ void main() {
   });
 
   // Prompt A17-E1: a real emulator force-stop/relaunch exposed that a cold
-  // start never re-derived AppState.paired from an existing, real, on-disk
+  // start never re-derived AppState.ready from an existing, real, on-disk
   // DesktopTrustStore -- the app fell back to the initial unpaired
   // "Paste pairing payload" screen even though persistent trust (Prompt
   // A15) was fully intact. restoreTrustState() is the fix; these tests
@@ -135,7 +137,7 @@ void main() {
 
       expect(controller.current.state, AppState.unpaired); // sanity: cold-start default before restoring
       await controller.restoreTrustState(trustStore);
-      expect(controller.current.state, AppState.paired);
+      expect(controller.current.state, AppState.ready);
     });
 
     test('no trusted desktop on disk leaves a fresh install unpaired', () async {

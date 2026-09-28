@@ -15,6 +15,7 @@ import 'security/secure_pairing_manager.dart';
 import 'security/secure_receiver_server.dart';
 import 'security/tls_identity.dart';
 import 'ui/home_screen.dart';
+import 'ui/theme/fs_theme.dart';
 
 /// Prompt A15: production Device Mode now defaults to the
 /// `pinned-tls-signature-v1` security profile -- a real self-signed TLS
@@ -72,7 +73,7 @@ Future<void> main() async {
   await controller.runStartupCleanup();
   controller.startPeriodicCleanup();
 
-  runApp(FriendSendApp(identity: identity, pairingManager: pairingManager, controller: controller));
+  runApp(FriendSendApp(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore));
 }
 
 class FriendSendApp extends StatelessWidget {
@@ -81,18 +82,22 @@ class FriendSendApp extends StatelessWidget {
     required this.identity,
     required this.pairingManager,
     required this.controller,
+    this.trustStore,
   });
 
   final DeviceIdentity identity;
   final SecurePairingManager pairingManager;
   final HandoffController controller;
+  final DesktopTrustStore? trustStore;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'FriendSend',
-      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-      home: HomeScreen(identity: identity, pairingManager: pairingManager, controller: controller),
+      theme: FsTheme.build(Brightness.light),
+      darkTheme: FsTheme.build(Brightness.dark),
+      themeMode: ThemeMode.system,
+      home: HomeScreen(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore),
     );
   }
 }
