@@ -1,40 +1,37 @@
-"""Functional download-manager GUI (Prompt A11, hardened in Prompt A12).
+"""Approved download-manager page (Final GUI/UX implementation).
 
-Backed exclusively by DownloadManagerService (A10) -- this module never
-imports DownloadQueue, DownloadTask, SchedulerPolicy, DispatchCoordinator,
-ConcurrentDownloadRuntime, RetryPolicy, ProgressRegistry,
-SqliteDownloadStateStore, RestartRecovery, or TransferControl, and never
-touches sqlite3 directly. Every command/button handler calls exactly one
-DownloadManagerService method and nothing else; every render reads
-exactly manager.snapshot()/item_snapshot()/completed_file() and nothing
-else. Share itself remains a separate domain: this module only ever
-bridges through rychlik.gui.completed_artifact_bridge and the existing
-ShareDialog, never touching ShareLinkService/DeviceShareService directly.
+Backed exclusively by DownloadManagerService -- this module never imports
+DownloadQueue/DownloadTask/Scheduler/Runtime/SQLite. Every command handler
+calls exactly one DownloadManagerService method per affected occurrence, and
+every render reads only manager.snapshot(include_history=True) / completed_file().
+No task state is ever fabricated locally: after a command the widget re-reads
+the service snapshot.
 
-Not the final visual design (see docs/FUNCTIONAL_GUI_INTEGRATION.md,
-docs/FUNCTIONAL_GUI_HARDENING.md) -- standard PySide6 widgets, a clean
-functional layout, no final colors/icons/typography/animations.
+Rows are identified by `queue_entry_id` only (never a row number), so sorting,
+filtering and live reordering cannot redirect an action to another download.
+
+Share itself remains a separate domain: this page only bridges through
+rychlik.gui.completed_artifact_bridge into an injected share launcher.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
-from PySide6.QtCore import QStandardPaths, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QPoint, QStandardPaths, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QComboBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -47,35 +44,38 @@ from rychlik.core.download_manager_service import (
     ManagerFaultedError,
     ManagerState,
 )
-from rychlik.core.download_queue import QueueEntryState, QueuePriority
+from rychlik.core.download_queue import QueuePriority
 from rychlik.core.download_task import DownloadTaskState
 from rychlik.core.download_view import DownloadViewSnapshot
+from rychlik.gui import presentation as P
 from rychlik.gui.completed_artifact_bridge import build_artifact_for_completed
-from rychlik.gui.formatters import (
-    derive_status_text,
-    format_downloaded_total,
-    format_eta,
-    format_priority,
-    format_progress,
-    format_speed,
-)
+from rychlik.gui.download_model import ITEM_ROLE, DownloadFilterProxy, DownloadTableModel
+from rychlik.gui.download_table import DownloadTableView
+from rychlik.gui.formatters import format_priority, format_speed
 from rychlik.gui.manager_qt_bridge import ManagerQtBridge
 from rychlik.gui.share_dialog import ShareDialog
-
-_QUEUE_ENTRY_ID_ROLE = Qt.ItemDataRole.UserRole
-_TASK_ID_ROLE = Qt.ItemDataRole.UserRole + 1
-
-_COLUMNS = ("Name", "Status", "Progress", "Downloaded / Total", "Speed", "ETA", "Priority", "Attempt")
-_PRIORITY_ORDER = (QueuePriority.HIGH, QueuePriority.NORMAL, QueuePriority.LOW)
-_PRIORITY_COMBO_LABELS = [format_priority(p) for p in _PRIORITY_ORDER]
+from rychlik.gui.theme import icons
+from rychlik.gui.theme.tokens import metrics, palette
 
 _REFRESH_COALESCE_MS = 100
+_RETRY_TICK_MS = 1000
 _STATUS_MESSAGE_LIFETIME_MS = 5000
+_HISTORY_LIMIT = 500
+
+_SERVICE_CALL = {
+    P.RowAction.PAUSE: ("pause", "pause_transfer"),
+    P.RowAction.RESUME: ("resume", "resume_transfer"),
+    P.RowAction.HOLD: ("hold", "hold"),
+    P.RowAction.RELEASE: ("release the hold on", "release_hold"),
+    P.RowAction.RETRY_NOW: ("retry", "retry_now"),
+    P.RowAction.CANCEL: ("cancel", "cancel"),
+}
+_PAST = {P.RowAction.PAUSE: "Pause", P.RowAction.RESUME: "Resume", P.RowAction.HOLD: "Hold", P.RowAction.RELEASE: "Release",
+         P.RowAction.RETRY_NOW: "Retry", P.RowAction.CANCEL: "Cancel"}
 
 
 def default_destination_dir() -> Path:
-    """§6: prefer the platform download location; fall back to a per-
-    process temp dir rather than hard-coding a real user path."""
+    """Prefer the platform download location; fall back to a per-process temp dir."""
     location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
     if location:
         path = Path(location)
@@ -87,6 +87,12 @@ def default_destination_dir() -> Path:
 
 
 class DownloadManagerWidget(QWidget):
+    summary_changed = Signal(int, int, str)  # active transfers, waiting downloads, aggregate speed text
+    counts_changed = Signal(dict)  # {"status": {name: n}, "category": {name: n}}
+    status_message = Signal(str)
+    add_requested = Signal()
+    open_queues_requested = Signal()
+
     def __init__(
         self,
         manager: DownloadManagerService,
@@ -94,173 +100,298 @@ class DownloadManagerWidget(QWidget):
         *,
         destination_chooser=None,
         folder_opener=None,
+        share_launcher: Callable | None = None,
+        details_launcher: Callable | None = None,
+        theme: str = "dark",
     ) -> None:
         super().__init__(parent)
         self._manager = manager
-        self._items_by_id: dict[str, DownloadViewSnapshot] = {}
+        self._theme = theme
         self._refresh_pending = False
-        self._updating_priority_combo = False
         self._add_in_progress = False
+        self._last_speed_text = ""
+        self._shutting_down = False
         self._destination_dir = default_destination_dir()
-        # §73: injectable so tests never open a real interactive dialog /
-        # never invoke the real platform file manager in headless CI (§92).
+        self._share_launcher = share_launcher
+        self._details_launcher = details_launcher
         self._destination_chooser = destination_chooser or (
             lambda parent, start_dir: QFileDialog.getExistingDirectory(parent, "Choose destination", start_dir)
         )
-        self._folder_opener = folder_opener or (
-            lambda path: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-        )
+        self._folder_opener = folder_opener or (lambda path: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
+        self._title = "All Downloads"
+
+        self.model = DownloadTableModel(self)
+        self.proxy = DownloadFilterProxy(self)
+        self.proxy.setSourceModel(self.model)
 
         self._bridge = ManagerQtBridge(manager, parent=self)
         self._bridge.manager_event.connect(self._on_manager_event)
         self._bridge.attach()
 
         self._build_ui()
-        self._connect_signals()
+        self._wire()
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setInterval(_RETRY_TICK_MS)
+        self._retry_timer.timeout.connect(self._retry_tick)
         self._show_recovery_notice()
         self._refresh_now()
 
-    # --- construction ------------------------------------------------------
+    # --- construction ---------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        self.setObjectName("Content")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 10, 16, 0)
+        root.setSpacing(0)
 
-        dest_row = QHBoxLayout()
-        dest_row.addWidget(QLabel("Save to:"))
-        self.destination_display = QLineEdit(str(self._destination_dir))
-        self.destination_display.setReadOnly(True)
-        self.browse_button = QPushButton("Browse…")
-        dest_row.addWidget(self.destination_display)
-        dest_row.addWidget(self.browse_button)
-        layout.addLayout(dest_row)
+        self.title_label = QLabel(self._title)
+        self.title_label.setProperty("role", "heading")
+        root.addWidget(self.title_label)
 
-        url_row = QHBoxLayout()
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("https://example.com/file.mp4")
-        self.download_button = QPushButton("Download")
-        url_row.addWidget(self.url_input)
-        url_row.addWidget(self.download_button)
-        layout.addLayout(url_row)
+        filters = QHBoxLayout()
+        filters.setContentsMargins(0, 8, 0, 10)
+        filters.setSpacing(8)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search downloads…")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setMaximumWidth(340)
+        self.search_input.setMinimumWidth(200)
+        self.search_input.setAccessibleName("Search downloads")
+        self.status_combo = QComboBox()
+        self.status_combo.setAccessibleName("Status filter")
+        for name in P.STATUS_COMBO_FILTERS:
+            self.status_combo.addItem(f"Status: {name}", name)
+        self.sort_combo = QComboBox()
+        self.sort_combo.setAccessibleName("Sort order")
+        for name in P.SORT_KEYS:
+            self.sort_combo.addItem(f"Sort: {name}", name)
+        self.count_label = QLabel("")
+        self.count_label.setProperty("role", "muted")
+        filters.addWidget(self.search_input)
+        filters.addWidget(self.status_combo)
+        filters.addWidget(self.sort_combo)
+        filters.addStretch(1)
+        filters.addWidget(self.count_label)
+        self._filters_row = QWidget()
+        self._filters_row.setLayout(filters)
 
-        self.summary_label = QLabel("")
-        layout.addWidget(self.summary_label)
-
-        self.empty_state_label = QLabel("No downloads yet.\nPaste a URL above to start.")
-        self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.table = QTableWidget(0, len(_COLUMNS))
-        self.table.setHorizontalHeaderLabels(_COLUMNS)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-
-        self._table_stack = QStackedWidget()
-        self._table_stack.addWidget(self.empty_state_label)  # index 0
-        self._table_stack.addWidget(self.table)  # index 1
-        layout.addWidget(self._table_stack)
-
-        controls = QHBoxLayout()
-        self.hold_button = QPushButton("Hold")
-        self.release_button = QPushButton("Release")
-        self.pause_button = QPushButton("Pause")
-        self.resume_button = QPushButton("Resume")
-        self.retry_button = QPushButton("Retry now")
-        self.cancel_button = QPushButton("Cancel")
-        self.up_button = QPushButton("Up")
-        self.down_button = QPushButton("Down")
-        self.priority_combo = QComboBox()
-        self.priority_combo.addItems(_PRIORITY_COMBO_LABELS)
-        self.open_folder_button = QPushButton("Open Folder")
-        self.share_button = QPushButton("Share...")
-        for widget in (
-            self.hold_button, self.release_button, self.pause_button, self.resume_button,
-            self.retry_button, self.cancel_button, self.up_button, self.down_button,
+        self.bulk_bar = QFrame()
+        self.bulk_bar.setObjectName("BulkBar")
+        bulk = QHBoxLayout(self.bulk_bar)
+        bulk.setContentsMargins(12, 0, 8, 0)
+        bulk.setSpacing(4)
+        self.bulk_count_label = QLabel("")
+        self.bulk_count_label.setProperty("role", "dialogTitle")
+        bulk.addWidget(self.bulk_count_label)
+        self.bulk_buttons: dict[P.RowAction, QPushButton] = {}
+        for action, label, glyph in (
+            (P.RowAction.PAUSE, "Pause", "pause"), (P.RowAction.RESUME, "Resume", "play"), (P.RowAction.HOLD, "Hold", "lock"),
+            (P.RowAction.RELEASE, "Release", "unlock"),
         ):
-            controls.addWidget(widget)
-        controls.addWidget(self.priority_combo)
-        controls.addWidget(self.open_folder_button)
-        controls.addWidget(self.share_button)
-        layout.addLayout(controls)
+            button = self._flat_button(label, glyph)
+            self.bulk_buttons[action] = button
+            bulk.addWidget(button)
+        self.bulk_priority_button = self._flat_button("Priority", "arrow-up")
+        bulk.addWidget(self.bulk_priority_button)
+        cancel_button = self._flat_button("Cancel", "x-circle")
+        self.bulk_buttons[P.RowAction.CANCEL] = cancel_button
+        bulk.addWidget(cancel_button)
+        bulk.addStretch(1)
+        self.bulk_clear_button = self._flat_button("Clear selection", "x")
+        bulk.addWidget(self.bulk_clear_button)
+        self.bulk_bar.setFixedHeight(36)
+        self.bulk_bar.setVisible(False)
+
+        self.empty_state = QWidget()
+        empty = QVBoxLayout(self.empty_state)
+        empty.addStretch(2)
+        self.empty_icon = QLabel()
+        self.empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_title = QLabel("No downloads yet")
+        self.empty_title.setProperty("role", "dialogTitle")
+        self.empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_text = QLabel("Press Ctrl+N to add a download.")
+        self.empty_text.setProperty("role", "muted")
+        self.empty_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_add_button = QPushButton("Add download")
+        self.empty_add_button.setProperty("variant", "primary")
+        for widget in (self.empty_icon, self.empty_title, self.empty_text):
+            empty.addWidget(widget)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(self.empty_add_button)
+        row.addStretch(1)
+        empty.addLayout(row)
+        empty.addStretch(3)
+
+        self.table = DownloadTableView(self._theme)
+        self.table.setModel(self.proxy)
+        self.table.apply_column_layout(P.column_layout(1366))
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self.empty_state)  # 0
+        self._stack.addWidget(self.table)  # 1
 
         self.status_label = QLabel("")
-        layout.addWidget(self.status_label)
+        self.status_label.setProperty("role", "caption")
+        self.hint_label = QLabel("Double-click opens details · Right-click shows actions · Ctrl+N adds a download")
+        self.hint_label.setProperty("role", "caption")
 
-        self._set_command_buttons_enabled(False)
+        root.addWidget(self._filters_row)
+        root.addWidget(self.bulk_bar)
+        root.addWidget(self._stack, 1)
+        footer = QHBoxLayout()
+        footer.setContentsMargins(2, 6, 2, 8)
+        footer.addWidget(self.hint_label)
+        footer.addStretch(1)
+        footer.addWidget(self.status_label)
+        root.addLayout(footer)
+        self._refresh_icons()
 
-    def _connect_signals(self) -> None:
-        self.browse_button.clicked.connect(self._on_browse_clicked)
-        self.download_button.clicked.connect(self._on_download_clicked)
-        self.url_input.returnPressed.connect(self._on_download_clicked)
-        self.table.itemSelectionChanged.connect(self._on_selection_changed)
-        self.hold_button.clicked.connect(self._on_hold_clicked)
-        self.release_button.clicked.connect(self._on_release_clicked)
-        self.pause_button.clicked.connect(self._on_pause_clicked)
-        self.resume_button.clicked.connect(self._on_resume_clicked)
-        self.retry_button.clicked.connect(self._on_retry_clicked)
-        self.cancel_button.clicked.connect(self._on_cancel_clicked)
-        self.up_button.clicked.connect(self._on_up_clicked)
-        self.down_button.clicked.connect(self._on_down_clicked)
-        self.priority_combo.currentIndexChanged.connect(self._on_priority_combo_changed)
-        self.open_folder_button.clicked.connect(self._on_open_folder_clicked)
-        self.share_button.clicked.connect(self._on_share_clicked)
+    def _flat_button(self, label: str, glyph: str) -> QPushButton:
+        button = QPushButton(label)
+        button.setProperty("variant", "tertiary")
+        button.setProperty("glyph", glyph)
+        button.setFixedHeight(26)
+        return button
 
-    def _show_recovery_notice(self) -> None:
-        # §64: a clean launch with nothing to report must stay silent.
-        report = self._manager.last_recovery_report
-        if report is not None and report.actions:
-            self.status_label.setText(f"Recovered {len(report.actions)} interrupted download(s) from a previous session.")
+    def _refresh_icons(self) -> None:
+        p = palette(self._theme)
+        m = metrics()
+        from PySide6.QtCore import QSize
 
-    # --- destination workflow (§5-9, §73, §120-121) ---------------------------
+        for button in [*self.bulk_buttons.values(), self.bulk_priority_button, self.bulk_clear_button]:
+            button.setIcon(icons.icon(button.property("glyph"), 14, p.accent_text, disabled_color=p.text_disabled))
+            button.setIconSize(QSize(14, 14))
+        self.empty_icon.setPixmap(icons.pixmap("download", 26, p.accent_text))
+        _ = m
 
-    def _on_browse_clicked(self) -> None:
-        chosen = self._destination_chooser(self, str(self._destination_dir))
-        if not chosen:
-            return  # cancelled -- existing selection unchanged (§121)
-        path = Path(chosen)
-        if not path.is_dir():
-            QMessageBox.warning(self, "Rýchlik", f"Not a valid directory:\n{path}")
+    def set_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.table.delegate.set_theme(theme)
+        self._refresh_icons()
+        self.table.viewport().update()
+
+    def _wire(self) -> None:
+        self.search_input.textChanged.connect(self._on_search_changed)
+        self.status_combo.currentIndexChanged.connect(self._on_status_combo_changed)
+        self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
+        self.empty_add_button.clicked.connect(self.add_requested)
+        self.table.selectionModel().selectionChanged.connect(lambda *_: self._on_selection_changed())
+        self.table.details_requested.connect(self.show_details)
+        self.table.context_requested.connect(self.show_context_menu)
+        self.table.space_requested.connect(self._toggle_pause_resume)
+        delegate = self.table.delegate
+        delegate.action_requested.connect(self._on_row_action)
+        delegate.more_requested.connect(self._on_more_requested)
+        header = self.table.horizontalHeader()
+        header.sectionClicked.connect(self._on_header_clicked)
+        for action, button in self.bulk_buttons.items():
+            button.clicked.connect(lambda _=False, a=action: self.run_action(a, self.selected_queue_entry_ids()))
+        self.bulk_priority_button.clicked.connect(self._show_bulk_priority_menu)
+        self.bulk_clear_button.clicked.connect(self.table.clearSelection)
+
+    # --- filtering / titles -------------------------------------------------------------------
+
+    def set_status_filter(self, name: str, title: str | None = None) -> None:
+        self.proxy.set_category_filter(None)
+        self.proxy.set_status_filter(name)
+        index = self.status_combo.findData(name)
+        if index >= 0 and self.status_combo.currentIndex() != index:
+            self.status_combo.blockSignals(True)
+            self.status_combo.setCurrentIndex(index)
+            self.status_combo.blockSignals(False)
+        self._set_title(title or ("All Downloads" if name == "All" else name))
+        self._update_counts_and_empty_state()
+
+    def set_category_filter(self, category: str) -> None:
+        self.proxy.set_status_filter("All")
+        self.proxy.set_category_filter(category)
+        self.status_combo.blockSignals(True)
+        self.status_combo.setCurrentIndex(0)
+        self.status_combo.blockSignals(False)
+        self._set_title(category)
+        self._update_counts_and_empty_state()
+
+    def _set_title(self, title: str) -> None:
+        self._title = title
+        self.title_label.setText(title)
+
+    def _on_search_changed(self, text: str) -> None:
+        self.proxy.set_search_text(text)
+        self._update_counts_and_empty_state()
+
+    def _on_status_combo_changed(self, index: int) -> None:
+        name = self.status_combo.itemData(index)
+        if name:
+            self.proxy.set_category_filter(None)
+            self.proxy.set_status_filter(name)
+            self._set_title("All Downloads" if name == "All" else name)
+            self._update_counts_and_empty_state()
+
+    def _on_sort_changed(self, index: int) -> None:
+        key = self.sort_combo.itemData(index)
+        if key:
+            self.proxy.set_sort(key, descending=(key == "Newest"))
+
+    def _on_header_clicked(self, column: int) -> None:
+        key = self.proxy.sort_key_for_column(column)
+        if key is None:
             return
-        self._destination_dir = path
-        self.destination_display.setText(str(path))
+        descending = self.proxy.sort_key == key and not self.proxy._descending  # noqa: SLF001
+        self.proxy.set_sort(key, descending=descending)
+        i = self.sort_combo.findData(key)
+        self.sort_combo.blockSignals(True)
+        self.sort_combo.setCurrentIndex(max(0, i))
+        self.sort_combo.blockSignals(False)
 
-    # --- shutdown ------------------------------------------------------------
+    def apply_width(self, width: int) -> P.ColumnLayout:
+        layout = P.column_layout(width)
+        self.model.set_merge_speed_eta(layout.merge_speed_eta)
+        self.table.apply_column_layout(layout)
+        return layout
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+
+    def publish_state(self) -> None:
+        """Re-emit counts and the summary from the current model (for late-connecting listeners)."""
+        self._update_counts_and_empty_state()
+        snapshot_items = self.model.items()
+        active = sum(1 for i in snapshot_items if i.task_state == DownloadTaskState.TRANSFERRING)
+        waiting = sum(1 for i in snapshot_items if P.matches_status_filter(i, "Waiting"))
+        self.summary_changed.emit(active, waiting, self._last_speed_text)
+
+    # --- shutdown / close -------------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Call before/around manager.stop() (§74): detaches the Qt bridge
-        so no further backend event can reach a widget that may be in the
-        process of being destroyed."""
+        self._retry_timer.stop()
         self._bridge.detach()
 
     def confirm_close(self) -> bool:
-        """§66-68: returns True if closing should proceed. A truthful
-        confirmation is only shown when the CURRENT snapshot reports an
-        active transfer -- wording matches actual A10 stop() semantics
-        (graceful wait, never an automatic pause)."""
         if self._manager.state != ManagerState.RUNNING:
             return True
-        snapshot = self._manager.snapshot()
-        if snapshot.active_transfer_count == 0:
+        if self._manager.snapshot().active_transfer_count == 0:
             return True
         reply = QMessageBox.question(
-            self,
-            "Rýchlik",
-            "Downloads are still active.\nClosing Rýchlik will wait for active transfers to finish.",
-            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Close,
-            QMessageBox.StandardButton.Cancel,
+            self, "Rýchlik", "Downloads are still active.\nClosing Rýchlik will wait for active transfers to finish.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Close, QMessageBox.StandardButton.Cancel,
         )
         return reply == QMessageBox.StandardButton.Close
 
     def prepare_shutdown(self) -> None:
-        """§69: called only after confirm_close() returns True -- disables
-        every mutating control and shows a bounded status before the
-        (possibly slow, graceful) manager.stop() call is made."""
-        self.download_button.setEnabled(False)
-        self.browse_button.setEnabled(False)
-        self._set_command_buttons_enabled(False)
-        self.status_label.setText("Shutting down…")
+        self._shutting_down = True
+        self.empty_add_button.setEnabled(False)
+        self._set_commands_enabled(False)
+        self._show_status_text("Shutting down…", persistent=True)
 
-    # --- backend event -> coalesced refresh (§18/§19, §126-128) ---------------
+    def _show_recovery_notice(self) -> None:
+        report = self._manager.last_recovery_report
+        if report is not None and report.actions:
+            self._show_status_text(f"Recovered {len(report.actions)} interrupted download(s) from a previous session.", persistent=True)
+
+    # --- refresh (event driven, coalesced) -------------------------------------------------------------
 
     def _on_manager_event(self, event) -> None:
         if self._refresh_pending:
@@ -268,282 +399,395 @@ class DownloadManagerWidget(QWidget):
         self._refresh_pending = True
         QTimer.singleShot(_REFRESH_COALESCE_MS, self._refresh_now)
 
+    def _retry_tick(self) -> None:
+        self._refresh_now()
+
     def _refresh_now(self) -> None:
         self._refresh_pending = False
         if self._manager.state != ManagerState.RUNNING:
             self._apply_faulted_or_stopped_ui()
             return
-        snapshot = self._manager.snapshot()
-        self._render_snapshot(snapshot)
+        snapshot = self._manager.snapshot(include_history=True, history_limit=_HISTORY_LIMIT)
+        self.model.set_items(snapshot.items)
+        self._update_counts_and_empty_state()
+        waiting = sum(1 for i in snapshot.items if P.matches_status_filter(i, "Waiting"))
+        speed = format_speed(snapshot.aggregate_speed_bps) if snapshot.aggregate_speed_bps else ""
+        self._last_speed_text = speed
+        self.summary_changed.emit(snapshot.active_transfer_count, waiting, speed)
+        needs_tick = any(i.task_state == DownloadTaskState.RETRY_WAIT for i in snapshot.items)
+        if needs_tick and not self._retry_timer.isActive():
+            self._retry_timer.start()
+        elif not needs_tick and self._retry_timer.isActive():
+            self._retry_timer.stop()
+        self.empty_add_button.setEnabled(True)
+        self._on_selection_changed()
 
     def _apply_faulted_or_stopped_ui(self) -> None:
-        self._set_command_buttons_enabled(False)
-        self.download_button.setEnabled(False)
+        self._set_commands_enabled(False)
+        self.empty_add_button.setEnabled(False)
         if self._manager.state == ManagerState.FAULTED:
-            self.status_label.setText("Download manager is unavailable (faulted). Restart the application.")
+            self._show_status_text("Download manager is unavailable (faulted). Restart the application.", persistent=True)
 
-    # --- rendering (§76: reads only, no backend commands) ---------------------
-
-    def _render_snapshot(self, snapshot) -> None:
-        selected_id = self._selected_queue_entry_id()
-
-        self._items_by_id = {item.queue_entry_id: item for item in snapshot.items}
-        self.table.setRowCount(len(snapshot.items))
-        for row, item in enumerate(snapshot.items):
-            self._render_row(row, item)
-
-        self._table_stack.setCurrentIndex(1 if snapshot.items else 0)  # §16-17
-        self._render_summary(snapshot)
-
-        self.download_button.setEnabled(True)
-        if selected_id is not None and selected_id in self._items_by_id:
-            self._select_row_for_id(selected_id)
+    def _update_counts_and_empty_state(self) -> None:
+        total = self.model.rowCount()
+        shown = self.proxy.rowCount()
+        self.count_label.setText(f"{shown} task{'s' if shown != 1 else ''}")
+        if total == 0:
+            self.empty_title.setText("No downloads yet")
+            self.empty_text.setText("Press Ctrl+N to add a download.")
+            self.empty_add_button.setVisible(True)
+            self._stack.setCurrentIndex(0)
+        elif shown == 0:
+            self.empty_title.setText("No downloads match")
+            self.empty_text.setText("Change the search or filter to see more.")
+            self.empty_add_button.setVisible(False)
+            self._stack.setCurrentIndex(0)
         else:
-            # §28/§96: the previously-selected occurrence is no longer
-            # displayed (completed/removed/terminal) -- clear selection
-            # rather than letting some other row silently inherit control.
-            self.table.clearSelection()
-            self._update_button_enablement(None)
+            self._stack.setCurrentIndex(1)
+        items = self.model.items()
+        status_counts = {name: sum(1 for i in items if P.matches_status_filter(i, name)) for name in P.SIDEBAR_FILTERS}
+        category_counts = {c: sum(1 for i in items if P.category_for(i.display_name) == c) for c in P.CATEGORIES}
+        self.counts_changed.emit({"status": status_counts, "category": category_counts})
 
-    def _render_summary(self, snapshot) -> None:
-        if not snapshot.items:
-            self.summary_label.setText("")
-            return
-        active = snapshot.active_transfer_count
-        parts = [f"{len(snapshot.items)} download(s)"]
-        if active:
-            parts.append(f"{active} active")
-        if snapshot.aggregate_speed_bps:
-            parts.append(format_speed(snapshot.aggregate_speed_bps))
-        self.summary_label.setText(" · ".join(parts))
+    # --- selection / identity -------------------------------------------------------------------------
 
-    def _render_row(self, row: int, item: DownloadViewSnapshot) -> None:
-        name_item = QTableWidgetItem(item.display_name or "(unknown)")
-        name_item.setData(_QUEUE_ENTRY_ID_ROLE, item.queue_entry_id)
-        name_item.setData(_TASK_ID_ROLE, item.task_id)
-        cells = [
-            name_item,
-            QTableWidgetItem(derive_status_text(item.task_state, item.queue_state)),
-            QTableWidgetItem(format_progress(item.progress_fraction)),
-            QTableWidgetItem(format_downloaded_total(item.bytes_downloaded, item.total_bytes)),
-            QTableWidgetItem(format_speed(item.speed_bps)),
-            QTableWidgetItem(format_eta(item.eta_seconds)),
-            QTableWidgetItem(format_priority(item.priority)),
-            QTableWidgetItem(str(item.attempt_count)),
-        ]
-        for col, cell in enumerate(cells):
-            cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row, col, cell)
-
-    # --- stable identity / selection (§23-§25, §95-96) --------------------------
+    def selected_queue_entry_ids(self) -> list[str]:
+        return self.table.selected_ids()
 
     def _selected_queue_entry_id(self) -> str | None:
-        rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
-        if not rows:
-            return None
-        item = self.table.item(rows[0].row(), 0)
-        return item.data(_QUEUE_ENTRY_ID_ROLE) if item is not None else None
+        ids = self.selected_queue_entry_ids()
+        return ids[0] if len(ids) == 1 else None
 
-    def _select_row_for_id(self, queue_entry_id: str) -> None:
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item is not None and item.data(_QUEUE_ENTRY_ID_ROLE) == queue_entry_id:
-                self.table.selectRow(row)
-                self._update_button_enablement(self._items_by_id.get(queue_entry_id))
-                return
-        self._update_button_enablement(None)
+    def selected_items(self) -> list[DownloadViewSnapshot]:
+        out = []
+        for entry_id in self.selected_queue_entry_ids():
+            item = self.model.item_for_id(entry_id)
+            if item is not None:
+                out.append(item)
+        return out
 
     def _on_selection_changed(self) -> None:
-        selected_id = self._selected_queue_entry_id()
-        self._update_button_enablement(self._items_by_id.get(selected_id) if selected_id else None)
+        items = self.selected_items()
+        self.table.refresh_hover_state()
+        many = len(items) >= 2
+        self.bulk_bar.setVisible(many)
+        if many:
+            self.bulk_count_label.setText(f"{len(items)} selected")
+            enabled = P.bulk_actions(items)
+            for action, button in self.bulk_buttons.items():
+                button.setEnabled(enabled[action] and self._manager.state == ManagerState.RUNNING)
+            self.bulk_priority_button.setEnabled(any(P.can_change_priority(i) for i in items))
 
-    # --- button enablement (§53-§59) -------------------------------------------
+    def _set_commands_enabled(self, enabled: bool) -> None:
+        for button in [*self.bulk_buttons.values(), self.bulk_priority_button]:
+            button.setEnabled(enabled)
 
-    def _set_command_buttons_enabled(self, enabled: bool) -> None:
-        for widget in (
-            self.hold_button, self.release_button, self.pause_button, self.resume_button,
-            self.retry_button, self.cancel_button, self.up_button, self.down_button,
-            self.priority_combo, self.open_folder_button, self.share_button,
-        ):
-            widget.setEnabled(enabled)
+    # --- commands: exactly one service call per affected occurrence -----------------------------------
 
-    def _update_button_enablement(self, item: DownloadViewSnapshot | None) -> None:
-        if item is None or self._manager.state != ManagerState.RUNNING:
-            self._set_command_buttons_enabled(False)
+    def run_action(self, action: P.RowAction, entry_ids: list[str]) -> None:
+        if action in (P.RowAction.MOVE_UP, P.RowAction.MOVE_DOWN):
+            if len(entry_ids) == 1:
+                self._move(entry_ids[0], -1 if action == P.RowAction.MOVE_UP else 1)
             return
-
-        self.hold_button.setEnabled(item.queue_state == QueueEntryState.QUEUED)
-        self.release_button.setEnabled(item.queue_state == QueueEntryState.PAUSED)
-        self.pause_button.setEnabled(item.task_state == DownloadTaskState.TRANSFERRING)
-        self.resume_button.setEnabled(item.task_state == DownloadTaskState.PAUSED)
-        self.retry_button.setEnabled(item.task_state == DownloadTaskState.RETRY_WAIT)
-        self.cancel_button.setEnabled(
-            item.task_state not in (DownloadTaskState.COMPLETED, DownloadTaskState.FAILED, DownloadTaskState.CANCELLED)
-        )
-        self.up_button.setEnabled(True)
-        self.down_button.setEnabled(True)
-        self.priority_combo.setEnabled(True)
-        self._updating_priority_combo = True
-        try:
-            self.priority_combo.setCurrentIndex(_PRIORITY_ORDER.index(item.priority))
-        finally:
-            self._updating_priority_combo = False
-        # §59: eligibility is COMPLETED-only here (cheap, no filesystem
-        # access per refresh, §60) -- actual file availability is validated
-        # lazily, on click, via the privileged completed_file() accessor.
-        completed = item.task_state == DownloadTaskState.COMPLETED
-        self.open_folder_button.setEnabled(completed)
-        self.share_button.setEnabled(completed)
-
-    # --- add download (§10-§15, §38-§41) -----------------------------------------
-
-    def _on_download_clicked(self) -> None:
-        if self._add_in_progress:
-            return  # §14: bounded double-submit guard, not a global lock
-        self._add_in_progress = True
-        try:
-            self._add_download_impl()
-        finally:
-            self._add_in_progress = False
-
-    def _add_download_impl(self) -> None:
-        url = self.url_input.text().strip()  # §12: trim only, no rewriting
-        if not url:
-            QMessageBox.warning(self, "Rýchlik", "Enter a URL first.")
+        if action == P.RowAction.OPEN_FOLDER:
+            self.open_folder(entry_ids[0]) if entry_ids else None
             return
-        if not self._destination_dir.is_dir():
-            QMessageBox.warning(self, "Rýchlik", f"Destination is not a valid directory:\n{self._destination_dir}")
+        if action == P.RowAction.SHARE:
+            self.share(entry_ids[0]) if entry_ids else None
             return
-        try:
-            request = DownloadRequest(url=url, destination_dir=self._destination_dir)
-        except ValueError as exc:
-            QMessageBox.warning(self, "Rýchlik", f"Invalid download request:\n{exc}")
+        if action == P.RowAction.DETAILS:
+            item = self.model.item_for_id(entry_ids[0]) if entry_ids else None
+            if item is not None:
+                self.show_details(item.queue_entry_id)
             return
-
-        try:
-            self._manager.add_download(request)
-        except Exception as exc:
-            self._show_command_error("add the download", exc)
+        if action not in _SERVICE_CALL:
             return
-        self.url_input.clear()  # §13: only after a successful add
-        self.url_input.setFocus()
-        self._refresh_now()
-
-    # --- commands (§42-§52) ------------------------------------------------------
-
-    def _on_hold_clicked(self) -> None:
-        self._run_command("hold", self._manager.hold)
-
-    def _on_release_clicked(self) -> None:
-        self._run_command("release the hold on", self._manager.release_hold)
-
-    def _on_pause_clicked(self) -> None:
-        self._run_command("pause", self._manager.pause_transfer)
-
-    def _on_resume_clicked(self) -> None:
-        self._run_command("resume", self._manager.resume_transfer)
-
-    def _on_retry_clicked(self) -> None:
-        self._run_command("retry", self._manager.retry_now)
-
-    def _on_cancel_clicked(self) -> None:
-        self._run_command("cancel", self._manager.cancel)
-
-    def _run_command(self, verb: str, method) -> None:
-        # §25/§93: always re-read the CURRENTLY selected id at click time --
-        # never a cached row index -- so a stale/removed occurrence cannot
-        # accidentally command whatever now occupies its old row.
-        entry_id = self._selected_queue_entry_id()
-        if entry_id is None:
-            return
-        try:
-            result: ManagerCommandResult = method(entry_id)
-        except Exception as exc:
-            self._show_command_error(verb, exc)
-            return
-        if result.status == CommandStatus.REJECTED:
-            self._show_status_message(f"Could not {verb}: {result.reason or 'rejected'}")
-        elif result.status == CommandStatus.ACCEPTED:
-            self._show_status_message(f"{verb.capitalize()} requested…")
-        self._refresh_now()
-
-    def _on_priority_combo_changed(self, index: int) -> None:
-        if self._updating_priority_combo:
-            return
-        entry_id = self._selected_queue_entry_id()
-        if entry_id is None or index < 0:
-            return
-        try:
-            self._manager.set_priority(entry_id, _PRIORITY_ORDER[index])
-        except Exception as exc:
-            self._show_command_error("change priority", exc)
-        self._refresh_now()
-
-    def _on_up_clicked(self) -> None:
-        self._move(direction=-1)
-
-    def _on_down_clicked(self) -> None:
-        self._move(direction=1)
-
-    def _move(self, *, direction: int) -> None:
-        entry_id = self._selected_queue_entry_id()
-        if entry_id is None:
-            return
-        item = self._items_by_id.get(entry_id)
-        if item is None:
-            return
-        snapshot = self._manager.snapshot()
-        same_band = [i for i in snapshot.items if i.priority == item.priority]
-        try:
-            index = next(i for i, x in enumerate(same_band) if x.queue_entry_id == entry_id)
-        except StopIteration:
-            return
-        neighbor_index = index + direction
-        if not (0 <= neighbor_index < len(same_band)):
-            return  # already at the edge of its band -- no-op, not an error
-        target_id = same_band[neighbor_index].queue_entry_id
-        try:
-            if direction < 0:
-                self._manager.move_before(entry_id, target_id)
+        verb, method_name = _SERVICE_CALL[action]
+        method = getattr(self._manager, method_name)
+        applied = rejected = 0
+        last_reason = ""
+        for entry_id in entry_ids:
+            item = self.model.item_for_id(entry_id)
+            if item is None:
+                continue  # left the snapshot since it was selected -- never redirect to another row
+            state = P.available_actions(item)[action]
+            if not (state.visible and state.enabled):
+                continue
+            try:
+                result: ManagerCommandResult = method(entry_id)
+            except Exception as exc:  # noqa: BLE001
+                self._show_command_error(verb, exc)
+                return
+            if result.status == CommandStatus.REJECTED:
+                rejected += 1
+                last_reason = result.reason or "rejected"
             else:
-                self._manager.move_after(entry_id, target_id)
-        except Exception as exc:
+                applied += 1
+        if rejected and not applied:
+            self._show_status_text(f"Could not {verb}: {last_reason}")
+        elif applied:
+            noun = "download" if applied == 1 else "downloads"
+            self._show_status_text(f"{_PAST[action]} requested for {applied} {noun}.")
+        self._refresh_now()
+
+    def set_priority(self, priority: QueuePriority, entry_ids: list[str]) -> None:
+        changed = 0
+        for entry_id in entry_ids:
+            item = self.model.item_for_id(entry_id)
+            if item is None or not P.can_change_priority(item):
+                continue
+            try:
+                result = self._manager.set_priority(entry_id, priority)
+            except Exception as exc:  # noqa: BLE001
+                self._show_command_error("change priority of", exc)
+                return
+            changed += 1 if result.status != CommandStatus.REJECTED else 0
+        if changed:
+            self._show_status_text(f"Priority set to {format_priority(priority)}.")
+        self._refresh_now()
+
+    def _move(self, entry_id: str, direction: int) -> None:
+        target = P.band_neighbor(self.model.items(), entry_id, direction)
+        if target is None:
+            return  # already at the edge of its band -- a no-op, not an error
+        try:
+            (self._manager.move_before if direction < 0 else self._manager.move_after)(entry_id, target)
+        except Exception as exc:  # noqa: BLE001
             self._show_command_error("reorder", exc)
         self._refresh_now()
 
-    # --- completed-file bridge: Open Folder / Share (§46-§60) --------------------
-
-    def _on_open_folder_clicked(self) -> None:
-        entry_id = self._selected_queue_entry_id()
-        if entry_id is None:
+    def _toggle_pause_resume(self) -> None:
+        item = self.selected_items()[0] if len(self.selected_items()) == 1 else None
+        if item is None:
             return
+        if item.task_state == DownloadTaskState.TRANSFERRING:
+            self.run_action(P.RowAction.PAUSE, [item.queue_entry_id])
+        elif item.task_state == DownloadTaskState.PAUSED:
+            self.run_action(P.RowAction.RESUME, [item.queue_entry_id])
+
+    def _on_row_action(self, entry_id: str, action) -> None:
+        self.run_action(action, [entry_id])
+
+    def _on_more_requested(self, entry_id: str, global_pos: QPoint) -> None:
+        proxy_row = next((r for r in range(self.proxy.rowCount()) if self.proxy.index(r, 0).data(Qt.ItemDataRole.UserRole) == entry_id), None)
+        if proxy_row is not None and entry_id not in self.selected_queue_entry_ids():
+            from PySide6.QtCore import QItemSelectionModel
+
+            self.table.selectionModel().select(self.proxy.index(proxy_row, 0),
+                                               QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
+        self.show_context_menu(global_pos)
+
+    # --- context menu -----------------------------------------------------------------------------------
+
+    def build_context_menu(self) -> QMenu | None:
+        items = self.selected_items()
+        if not items:
+            return None
+        p = palette(self._theme)
+        menu = QMenu(self)
+
+        running = self._manager.state == ManagerState.RUNNING and not self._shutting_down
+
+        def add(text, glyph, action=None, slot=None, enabled=True, tip=None, danger=False) -> QAction:
+            act = menu.addAction(icons.icon(glyph, 15, p.error_text if danger else p.icon, disabled_color=p.text_disabled), text)
+            act.setEnabled(enabled and (running or action is None and slot is not None and text in ("Details",)))
+            if tip:
+                act.setToolTip(tip)
+                act.setStatusTip(tip)
+            if slot is not None:
+                act.triggered.connect(slot)
+            elif action is not None:
+                ids = [i.queue_entry_id for i in items]
+                act.triggered.connect(lambda _=False, a=action, ids=ids: self.run_action(a, ids))
+            return act
+
+        if len(items) == 1:
+            item = items[0]
+            acts = P.available_actions(item, band_position=self.model.data(self.model.index(self.model_row(item.queue_entry_id), 0), Qt.ItemDataRole.UserRole + 2))
+            group_a = False
+            for action, text, glyph in (
+                (P.RowAction.PAUSE, "Pause", "pause"), (P.RowAction.RESUME, "Resume", "play"), (P.RowAction.RETRY_NOW, "Retry now", "refresh"),
+                (P.RowAction.HOLD, "Hold", "lock"), (P.RowAction.RELEASE, "Release", "unlock"),
+            ):
+                if acts[action].visible:
+                    tip = "Do not start this download until it is released. A running transfer is not stopped; use Pause for that." if action == P.RowAction.HOLD else None
+                    add(text, glyph, action, tip=tip)
+                    group_a = True
+            if acts[P.RowAction.MOVE_UP].visible:
+                if group_a:
+                    menu.addSeparator()
+                sub = menu.addMenu(icons.icon("arrow-up", 15, p.icon), "Priority")
+                for prio in P.PRIORITY_ORDER:
+                    a = sub.addAction(("✓ " if prio == item.priority else "    ") + format_priority(prio))
+                    a.triggered.connect(lambda _=False, pr=prio, i=item.queue_entry_id: self.set_priority(pr, [i]))
+                sub.addSeparator()
+                note = sub.addAction("Order changes apply within the same priority.")
+                note.setEnabled(False)
+                for action, text, glyph in ((P.RowAction.MOVE_UP, "Move up", "arrow-up"), (P.RowAction.MOVE_DOWN, "Move down", "arrow-down")):
+                    st = acts[action]
+                    add(text, glyph, action, enabled=st.enabled, tip=st.reason)
+            if acts[P.RowAction.CANCEL].visible:
+                menu.addSeparator()
+                add("Cancel", "x-circle", P.RowAction.CANCEL, danger=True)
+            def separator_if_needed() -> None:
+                last = menu.actions()[-1] if menu.actions() else None
+                if last is not None and not last.isSeparator():
+                    menu.addSeparator()
+
+            secondary = [(P.RowAction.OPEN, "Open", "external"), (P.RowAction.OPEN_FOLDER, "Open folder", "folder"), (P.RowAction.DETAILS, "Details", "info"),
+                         (P.RowAction.SHARE, "Share…", "send")]
+            for action, text, glyph in secondary:
+                if not acts[action].visible:
+                    continue
+                if action == P.RowAction.OPEN or (action == P.RowAction.DETAILS and not any(acts[a].visible for a in (P.RowAction.OPEN, P.RowAction.OPEN_FOLDER))):
+                    separator_if_needed()
+                if action == P.RowAction.SHARE:
+                    separator_if_needed()
+                if action == P.RowAction.OPEN:
+                    add(text, glyph, slot=lambda _=False, i=item.queue_entry_id: self.open_file(i))
+                elif action == P.RowAction.OPEN_FOLDER:
+                    add(text, glyph, slot=lambda _=False, i=item.queue_entry_id: self.open_folder(i))
+                elif action == P.RowAction.DETAILS:
+                    add(text, glyph, slot=lambda _=False, i=item.queue_entry_id: self.show_details(i))
+                else:
+                    add(text, glyph, slot=lambda _=False, i=item.queue_entry_id: self.share(i))
+        else:
+            enabled = P.bulk_actions(items)
+            for action, text, glyph in ((P.RowAction.PAUSE, "Pause", "pause"), (P.RowAction.RESUME, "Resume", "play"),
+                                        (P.RowAction.HOLD, "Hold", "lock"), (P.RowAction.RELEASE, "Release", "unlock")):
+                add(text, glyph, action, enabled=enabled[action])
+            sub = menu.addMenu(icons.icon("arrow-up", 15, p.icon), "Priority")
+            ids = [i.queue_entry_id for i in items]
+            for prio in P.PRIORITY_ORDER:
+                sub.addAction(format_priority(prio)).triggered.connect(lambda _=False, pr=prio, ids=ids: self.set_priority(pr, ids))
+            menu.addSeparator()
+            add("Cancel", "x-circle", P.RowAction.CANCEL, enabled=enabled[P.RowAction.CANCEL], danger=True)
+        return menu
+
+    def model_row(self, entry_id: str) -> int:
+        for row, item in enumerate(self.model.items()):
+            if item.queue_entry_id == entry_id:
+                return row
+        return 0
+
+    def show_context_menu(self, global_pos: QPoint) -> None:
+        menu = self.build_context_menu()
+        if menu is not None:
+            menu.exec(global_pos)
+
+    def _show_bulk_priority_menu(self) -> None:
+        menu = QMenu(self)
+        ids = self.selected_queue_entry_ids()
+        for prio in P.PRIORITY_ORDER:
+            menu.addAction(format_priority(prio)).triggered.connect(lambda _=False, pr=prio, ids=ids: self.set_priority(pr, ids))
+        menu.exec(self.bulk_priority_button.mapToGlobal(self.bulk_priority_button.rect().bottomLeft()))
+
+    # --- add download -----------------------------------------------------------------------------------
+
+    @property
+    def destination_dir(self) -> Path:
+        return self._destination_dir
+
+    def choose_destination(self) -> Path | None:
+        chosen = self._destination_chooser(self, str(self._destination_dir))
+        if not chosen:
+            return None
+        path = Path(chosen)
+        if not path.is_dir():
+            QMessageBox.warning(self, "Rýchlik", f"Not a valid directory:\n{path}")
+            return None
+        self._destination_dir = path
+        return path
+
+    def submit_download(self, url: str, destination_dir: Path | None = None) -> bool:
+        """Adds one download. Returns True only after the service accepted it.
+        A bounded re-entrancy guard (not a global lock) keeps a double submit from adding twice."""
+        if self._add_in_progress:
+            return False
+        self._add_in_progress = True
+        try:
+            return self._submit_download_impl(url, destination_dir)
+        finally:
+            self._add_in_progress = False
+
+    def _submit_download_impl(self, url: str, destination_dir: Path | None) -> bool:
+        url = url.strip()
+        if not url:
+            QMessageBox.warning(self, "Rýchlik", "Enter a URL first.")
+            return False
+        destination = Path(destination_dir) if destination_dir is not None else self._destination_dir
+        if not destination.is_dir():
+            QMessageBox.warning(self, "Rýchlik", f"Destination is not a valid directory:\n{destination}")
+            return False
+        try:
+            request = DownloadRequest(url=url, destination_dir=destination)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Rýchlik", f"Invalid download request:\n{exc}")
+            return False
+        try:
+            self._manager.add_download(request)
+        except Exception as exc:  # noqa: BLE001
+            self._show_command_error("add the download", exc)
+            return False
+        self._destination_dir = destination
+        self._refresh_now()
+        return True
+
+    def open_add_dialog(self) -> None:
+        from rychlik.gui.dialogs import AddDownloadDialog
+
+        AddDownloadDialog(self, theme=self._theme).exec()
+
+    # --- completed-file bridge: Open / Open folder / Share / Details --------------------------------------
+
+    def open_folder(self, entry_id: str) -> None:
         result = self._manager.completed_file(entry_id)
         if result.info is None:
-            self._show_status_message(f"Cannot open folder: {result.reason or result.status.name}")
+            self._show_status_text(f"Cannot open folder: {result.reason or result.status.name}")
             return
         self._folder_opener(result.info.local_path.parent)
 
-    def _on_share_clicked(self) -> None:
-        entry_id = self._selected_queue_entry_id()
-        if entry_id is None:
+    def open_file(self, entry_id: str) -> None:
+        result = self._manager.completed_file(entry_id)
+        if result.info is None:
+            self._show_status_text(f"Cannot open file: {result.reason or result.status.name}")
             return
+        self._folder_opener(result.info.local_path)
+
+    def share(self, entry_id: str) -> None:
         artifact, result = build_artifact_for_completed(self._manager, entry_id)
         if artifact is None:
-            self._show_status_message(f"Cannot share: {result.reason or result.status.name}")
+            self._show_status_text(f"Cannot share: {result.reason or result.status.name}")
             return
-        dialog = ShareDialog(artifact, parent=self)
-        dialog.exec()
+        launcher = self._share_launcher
+        if launcher is None:
+            ShareDialog(artifact, parent=self).exec()
+        else:
+            launcher(artifact, self)
 
-    # --- error handling (§61-§62, §65) -------------------------------------------
+    def show_details(self, entry_id: str) -> None:
+        item = self.model.item_for_id(entry_id)
+        if item is None:
+            return
+        if self._details_launcher is not None:
+            self._details_launcher(item, self)
+            return
+        from rychlik.gui.dialogs import DetailsDialog
+
+        DetailsDialog(self._manager, item, self, theme=self._theme).exec()
+
+    # --- messages -------------------------------------------------------------------------------------------
+
+    def _show_status_text(self, text: str, *, persistent: bool = False) -> None:
+        self.status_label.setText(text)
+        self.status_message.emit(text)
+        if not persistent:
+            QTimer.singleShot(_STATUS_MESSAGE_LIFETIME_MS, self._clear_if_unchanged(text))
 
     def _show_status_message(self, text: str) -> None:
-        """Routine command feedback (§62): shown briefly, then cleared --
-        never used for a persistent fault indication (that stays until the
-        service state itself changes, via _apply_faulted_or_stopped_ui)."""
-        self.status_label.setText(text)
-        QTimer.singleShot(_STATUS_MESSAGE_LIFETIME_MS, self._clear_status_message_if_unchanged(text))
+        self._show_status_text(text)
 
-    def _clear_status_message_if_unchanged(self, text: str):
+    def _clear_if_unchanged(self, text: str):
         def _clear() -> None:
             if self.status_label.text() == text:
                 self.status_label.setText("")
@@ -552,10 +796,7 @@ class DownloadManagerWidget(QWidget):
 
     def _show_command_error(self, verb: str, exc: Exception) -> None:
         if isinstance(exc, ManagerFaultedError):
-            self.status_label.setText("Download manager is unavailable (faulted). Restart the application.")
+            self._show_status_text("Download manager is unavailable (faulted). Restart the application.", persistent=True)
             self._apply_faulted_or_stopped_ui()
             return
-        # Never expose raw tracebacks/SQLite/requests internals to the user;
-        # the exception's own message is already a bounded domain string
-        # for PersistenceCommandError/ManagerNotRunningError.
         QMessageBox.warning(self, "Rýchlik", f"Could not {verb} this download.\n{exc}")

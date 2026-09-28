@@ -22,6 +22,7 @@ from rychlik.core.download_queue import QueueEntryState, QueuePriority
 from rychlik.core.download_task import DownloadTaskState
 from rychlik.core.download_view import DownloadManagerSnapshot, DownloadViewSnapshot
 from rychlik.gui.download_manager_widget import DownloadManagerWidget
+from gui_legacy_adapter import make_widget
 
 
 def _item(**overrides) -> DownloadViewSnapshot:
@@ -58,7 +59,7 @@ class _FakeManager:
     def set_items(self, items):
         self._items = {i.queue_entry_id: i for i in items}
 
-    def snapshot(self):
+    def snapshot(self, **kwargs):
         return DownloadManagerSnapshot(items=tuple(self._items.values()), active_transfer_count=0, aggregate_speed_bps=None)
 
     def item_snapshot(self, queue_entry_id):
@@ -127,10 +128,10 @@ class _FakeManager:
 
 
 def _select(widget, queue_entry_id):
-    for row in range(widget.table.rowCount()):
-        item = widget.table.item(row, 0)
+    for row in range(widget.table_legacy.rowCount()):
+        item = widget.table_legacy.item(row, 0)
         if item.data(256) == queue_entry_id:  # Qt.ItemDataRole.UserRole == 256
-            widget.table.selectRow(row)
+            widget.table_legacy.selectRow(row)
             return
     raise AssertionError(f"row for {queue_entry_id!r} not found")
 
@@ -140,17 +141,17 @@ def _select(widget, queue_entry_id):
 
 def test_window_construction_no_exception(qapp):
     manager = _FakeManager()
-    widget = DownloadManagerWidget(manager)
-    assert widget.table.rowCount() == 0
+    widget = make_widget(manager)
+    assert widget.table_legacy.rowCount() == 0
     assert widget.download_button.isEnabled()
 
 
 def test_initial_snapshot_renders_items_in_order(qapp):
     manager = _FakeManager(items=[_item(queue_entry_id="a", display_name="a.mp4"), _item(queue_entry_id="b", display_name="b.mp4")])
-    widget = DownloadManagerWidget(manager)
-    assert widget.table.rowCount() == 2
-    assert widget.table.item(0, 0).text() == "a.mp4"
-    assert widget.table.item(1, 0).text() == "b.mp4"
+    widget = make_widget(manager)
+    assert widget.table_legacy.rowCount() == 2
+    assert widget.table_legacy.item(0, 0).text() == "a.mp4"
+    assert widget.table_legacy.item(1, 0).text() == "b.mp4"
 
 
 def test_recovery_notice_shown_when_actions_present(qapp):
@@ -162,7 +163,7 @@ def test_recovery_notice_shown_when_actions_present(qapp):
         restored_task_count=1, restored_queue_entry_count=1, restored_retry_count=0,
     )
     manager = _FakeManager(recovery_report=report)
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     assert "Recovered" in widget.status_label.text()
 
 
@@ -171,7 +172,7 @@ def test_recovery_notice_shown_when_actions_present(qapp):
 
 def test_selection_survives_reorder_by_identity(qapp):
     manager = _FakeManager(items=[_item(queue_entry_id="a", display_name="a.mp4"), _item(queue_entry_id="b", display_name="b.mp4")])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "b")
     assert widget._selected_queue_entry_id() == "b"
 
@@ -179,7 +180,7 @@ def test_selection_survives_reorder_by_identity(qapp):
     manager.set_items([_item(queue_entry_id="b", display_name="b.mp4"), _item(queue_entry_id="a", display_name="a.mp4")])
     widget._refresh_now()
     assert widget._selected_queue_entry_id() == "b"
-    assert widget.table.item(0, 0).text() == "b.mp4"
+    assert widget.table_legacy.item(0, 0).text() == "b.mp4"
 
 
 # --- button enablement ---------------------------------------------------------
@@ -187,7 +188,7 @@ def test_selection_survives_reorder_by_identity(qapp):
 
 def test_enablement_ready_queued(qapp):
     manager = _FakeManager(items=[_item(task_state=DownloadTaskState.READY, queue_state=QueueEntryState.QUEUED)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     assert widget.hold_button.isEnabled()
     assert not widget.release_button.isEnabled()
@@ -200,7 +201,7 @@ def test_enablement_ready_queued(qapp):
 
 def test_enablement_queue_held(qapp):
     manager = _FakeManager(items=[_item(task_state=DownloadTaskState.READY, queue_state=QueueEntryState.PAUSED)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     assert not widget.hold_button.isEnabled()
     assert widget.release_button.isEnabled()
@@ -208,7 +209,7 @@ def test_enablement_queue_held(qapp):
 
 def test_enablement_transferring(qapp):
     manager = _FakeManager(items=[_item(task_state=DownloadTaskState.TRANSFERRING)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     assert widget.pause_button.isEnabled()
     assert not widget.resume_button.isEnabled()
@@ -218,7 +219,7 @@ def test_enablement_transferring(qapp):
 
 def test_enablement_task_paused(qapp):
     manager = _FakeManager(items=[_item(task_state=DownloadTaskState.PAUSED)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     assert widget.resume_button.isEnabled()
     assert not widget.pause_button.isEnabled()
@@ -226,7 +227,7 @@ def test_enablement_task_paused(qapp):
 
 def test_enablement_retry_wait(qapp):
     manager = _FakeManager(items=[_item(task_state=DownloadTaskState.RETRY_WAIT)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     assert widget.retry_button.isEnabled()
 
@@ -234,7 +235,7 @@ def test_enablement_retry_wait(qapp):
 def test_enablement_terminal_states_disable_cancel(qapp):
     for state in (DownloadTaskState.COMPLETED, DownloadTaskState.FAILED, DownloadTaskState.CANCELLED):
         manager = _FakeManager(items=[_item(task_state=state, queue_state=QueueEntryState.REMOVED)])
-        widget = DownloadManagerWidget(manager)
+        widget = make_widget(manager)
         _select(widget, "q1")
         assert not widget.cancel_button.isEnabled(), state
 
@@ -242,13 +243,13 @@ def test_enablement_terminal_states_disable_cancel(qapp):
 def test_enablement_share_and_open_folder_only_for_completed(qapp):
     for state in (DownloadTaskState.FAILED, DownloadTaskState.CANCELLED, DownloadTaskState.READY):
         manager = _FakeManager(items=[_item(task_state=state, queue_state=QueueEntryState.REMOVED)])
-        widget = DownloadManagerWidget(manager)
+        widget = make_widget(manager)
         _select(widget, "q1")
         assert not widget.share_button.isEnabled(), state
         assert not widget.open_folder_button.isEnabled(), state
 
     manager = _FakeManager(items=[_item(task_state=DownloadTaskState.COMPLETED, queue_state=QueueEntryState.REMOVED)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     assert widget.share_button.isEnabled()
     assert widget.open_folder_button.isEnabled()
@@ -259,7 +260,7 @@ def test_enablement_share_and_open_folder_only_for_completed(qapp):
 
 def test_download_button_calls_add_download_only(qapp):
     manager = _FakeManager()
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     widget.url_input.setText("https://example.test/video.mp4")
     widget.download_button.click()
     assert len(manager.calls) == 1
@@ -271,7 +272,7 @@ def test_download_button_calls_add_download_only(qapp):
 
 def test_download_button_empty_url_does_not_call_manager(qapp, monkeypatch):
     manager = _FakeManager()
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     monkeypatch.setattr("rychlik.gui.download_manager_widget.QMessageBox.warning", lambda *a, **k: None)
     widget.download_button.click()
     assert manager.calls == []
@@ -282,7 +283,7 @@ def test_download_button_empty_url_does_not_call_manager(qapp, monkeypatch):
 
 def test_hold_calls_manager_with_exact_id(qapp):
     manager = _FakeManager(items=[_item(queue_entry_id="q1")])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     widget.hold_button.click()
     assert ("hold", "q1") in manager.calls
@@ -290,18 +291,18 @@ def test_hold_calls_manager_with_exact_id(qapp):
 
 def test_pause_calls_manager_without_forcing_row_state(qapp):
     manager = _FakeManager(items=[_item(queue_entry_id="q1", task_state=DownloadTaskState.TRANSFERRING)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     widget.pause_button.click()
     assert ("pause_transfer", "q1") in manager.calls
     # ACCEPTED must not immediately relabel the row as Paused -- only a
     # subsequent snapshot (still reporting TRANSFERRING here) does that.
-    assert widget.table.item(0, 1).text() == "Downloading"
+    assert widget.table_legacy.item(0, 1).text() == "Downloading"
 
 
 def test_resume_calls_manager_with_exact_id(qapp):
     manager = _FakeManager(items=[_item(queue_entry_id="q1", task_state=DownloadTaskState.PAUSED)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     widget.resume_button.click()
     assert ("resume_transfer", "q1") in manager.calls
@@ -309,7 +310,7 @@ def test_resume_calls_manager_with_exact_id(qapp):
 
 def test_cancel_calls_manager_with_exact_id(qapp):
     manager = _FakeManager(items=[_item(queue_entry_id="q1")])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     widget.cancel_button.click()
     assert ("cancel", "q1") in manager.calls
@@ -317,7 +318,7 @@ def test_cancel_calls_manager_with_exact_id(qapp):
 
 def test_retry_now_calls_manager_with_exact_id(qapp):
     manager = _FakeManager(items=[_item(queue_entry_id="q1", task_state=DownloadTaskState.RETRY_WAIT)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     widget.retry_button.click()
     assert ("retry_now", "q1") in manager.calls
@@ -325,7 +326,7 @@ def test_retry_now_calls_manager_with_exact_id(qapp):
 
 def test_priority_combo_calls_set_priority(qapp):
     manager = _FakeManager(items=[_item(queue_entry_id="q1", priority=QueuePriority.NORMAL)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     widget.priority_combo.setCurrentIndex(0)  # "High"
     assert ("set_priority", "q1", QueuePriority.HIGH) in manager.calls
@@ -336,7 +337,7 @@ def test_move_up_down_use_move_before_after(qapp):
         _item(queue_entry_id="a", priority=QueuePriority.NORMAL, position=0),
         _item(queue_entry_id="b", priority=QueuePriority.NORMAL, position=1),
     ])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "b")
     widget.up_button.click()
     assert ("move_before", "b", "a") in manager.calls
@@ -349,7 +350,7 @@ def test_move_up_down_use_move_before_after(qapp):
 
 def test_move_up_at_band_edge_is_noop(qapp):
     manager = _FakeManager(items=[_item(queue_entry_id="a", priority=QueuePriority.NORMAL, position=0)])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "a")
     widget.up_button.click()
     assert manager.calls == []
@@ -360,7 +361,7 @@ def test_move_up_at_band_edge_is_noop(qapp):
 
 def test_backend_event_from_background_thread_delivered_on_gui_thread(qapp):
     manager = _FakeManager()
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     received = {}
 
     def check(event):
@@ -388,7 +389,7 @@ def test_backend_event_from_background_thread_delivered_on_gui_thread(qapp):
 
 def test_late_event_after_shutdown_does_not_crash(qapp):
     manager = _FakeManager()
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     widget.shutdown()
     # Simulate a very-late delivery reaching the (already-detached) bridge directly.
     widget._on_manager_event(ManagerEvent(ManagerEventKind.QUEUE_CHANGED))  # must not raise
@@ -402,7 +403,7 @@ def test_bad_backend_command_shows_error_without_crashing(qapp, monkeypatch):
         raise RuntimeError("disk full")
 
     manager.hold = boom
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
 
     warnings = []
@@ -419,7 +420,7 @@ def test_bad_backend_command_shows_error_without_crashing(qapp, monkeypatch):
 
 def test_faulted_service_disables_mutating_controls(qapp):
     manager = _FakeManager(items=[_item(queue_entry_id="q1")])
-    widget = DownloadManagerWidget(manager)
+    widget = make_widget(manager)
     _select(widget, "q1")
     assert widget.hold_button.isEnabled()
 
