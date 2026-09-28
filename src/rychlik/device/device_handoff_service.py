@@ -209,6 +209,37 @@ class DeviceHandoffService:
     def devices(self) -> tuple[FriendSendDevice, ...]:
         return self._registry.all_devices()
 
+    def _resolve_device(self, device_id: str) -> FriendSendDevice:
+        """The in-memory registry (legacy pairing + tests) first; otherwise, when the transport is the
+        secure profile, a device that was paired through the real A15 flow lives ONLY in its
+        persistent trust store, so build the descriptor from that record. Nothing is stored here and
+        the transport still resolves endpoint/pin from the trust store itself."""
+        try:
+            return self._registry.get(device_id)
+        except UnknownDeviceError:
+            trust_store = getattr(self._transport, "trust_store", None)
+            trusted = trust_store.get(device_id) if trust_store is not None else None
+            if trusted is None:
+                raise
+            try:
+                paired_at = datetime.fromisoformat(trusted.paired_at_utc)
+            except ValueError:
+                paired_at = self._clock()
+            if paired_at.tzinfo is None:
+                paired_at = paired_at.replace(tzinfo=timezone.utc)
+            return FriendSendDevice(
+                device_id=trusted.device_id,
+                display_name=trusted.display_name,
+                platform="android",
+                endpoint=trusted.endpoint,
+                protocol_version=trusted.protocol_version,
+                capabilities=frozenset({DeviceCapability.RECEIVE_STREAM}),
+                # The secure profile authenticates with the pinned TLS identity and an Ed25519
+                # signature, never a bearer token; the descriptor only needs a non-empty marker.
+                auth_token=trusted.security_profile,
+                paired_at_utc=paired_at,
+            )
+
     # --- send / cancel (§7-§26, §61-§64) --------------------------------------
 
     def send(self, device_id: str, artifact: Artifact) -> str:
@@ -216,7 +247,7 @@ class DeviceHandoffService:
         the actual transfer runs on the worker pool and this returns the
         new handoff_id immediately (§39, matches A10's async-command
         philosophy)."""
-        device = self._registry.get(device_id)  # raises UnknownDeviceError
+        device = self._resolve_device(device_id)  # raises UnknownDeviceError
         if device.protocol_version != FRIENDSEND_PROTOCOL_VERSION:
             raise UnsupportedProtocolError(
                 f"device {device_id!r} reports protocol {device.protocol_version}, "

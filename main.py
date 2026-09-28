@@ -13,6 +13,8 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from rychlik.core.download_manager_service import DownloadManagerService, ManagerFaultedError
+from rychlik.gui.device_mode import DeviceModeController
+from rychlik.gui.dialogs.device_dialogs import DevicesPage, PairDeviceDialog, ShareSelectorDialog
 from rychlik.gui.download_manager_widget import DownloadManagerWidget
 from rychlik.gui.main_window import MainWindow
 from rychlik.gui.theme.manager import ThemeManager
@@ -31,8 +33,17 @@ def main() -> int:
         QMessageBox.critical(None, "Rýchlik", f"Failed to start the download manager:\n{exc}")
         return 1
 
-    widget = DownloadManagerWidget(manager, theme=themes.theme)
-    window = MainWindow(manager, widget, theme_manager=themes)
+    devices = DeviceModeController()
+    devices.start()  # discovery problems are reported by the controller, never fatal
+    widget = DownloadManagerWidget(
+        manager, theme=themes.theme, share_launcher=lambda artifact, parent: ShareSelectorDialog(artifact, devices, parent).exec()
+    )
+    devices_page = DevicesPage(devices)
+    window = MainWindow(
+        manager, widget, theme_manager=themes, devices_page=devices_page,
+        device_actions={"pair": lambda: PairDeviceDialog(devices, window).exec()},
+    )
+    app.aboutToQuit.connect(devices.stop)
     window.show()
     return app.exec()
 
