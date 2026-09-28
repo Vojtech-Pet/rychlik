@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import 'platform/incoming_share.dart';
 import 'monetization/billing_adapter.dart';
 import 'monetization/entitlement_service.dart';
 import 'monetization/google_play_billing_adapter.dart';
+import 'monetization/purchase_verifier.dart';
 import 'platform/lan_address.dart';
 import 'platform/media_bridge.dart';
 import 'platform/recent_targets.dart';
@@ -82,6 +84,16 @@ Future<void> main() async {
   await controller.runStartupCleanup();
   controller.startPeriodicCleanup();
 
+  // Best-effort auto-restore (B2): a returning install with an owned purchase gets FULL back without a tap.
+  // Never blocks startup; any failure just leaves the trial state as-is.
+  final entitlementService = EntitlementService(supportDir);
+  final billingAdapter = GooglePlayBillingAdapter();
+  const verifier = ServerPurchaseVerifier();
+  unawaited(billingAdapter.restorePurchases().then(
+    (record) => entitlementService.restoreFrom(record, verifier: verifier),
+    onError: (_) {},
+  ));
+
   runApp(FriendSendApp(
     identity: identity,
     pairingManager: pairingManager,
@@ -92,8 +104,9 @@ Future<void> main() async {
     textSharer: shareBridge,
     recentTargets: FileRecentTargets(supportDir),
     videoFetcher: PlatformVideoFetcher(),
-    entitlement: EntitlementService(supportDir),
-    billing: GooglePlayBillingAdapter(),
+    entitlement: entitlementService,
+    billing: billingAdapter,
+    verifier: verifier,
   ));
 }
 
@@ -111,6 +124,7 @@ class FriendSendApp extends StatelessWidget {
     this.videoFetcher,
     this.entitlement = const AlwaysUnlockedEntitlement(),
     this.billing = const UnavailableBillingAdapter(),
+    this.verifier = const ServerPurchaseVerifier(),
   });
 
   final DeviceIdentity identity;
@@ -124,6 +138,7 @@ class FriendSendApp extends StatelessWidget {
   final VideoFetcher? videoFetcher;
   final EntitlementSource entitlement;
   final BillingAdapter billing;
+  final PurchaseVerifier verifier;
 
   @override
   Widget build(BuildContext context) {
@@ -132,7 +147,7 @@ class FriendSendApp extends StatelessWidget {
       theme: FsTheme.build(Brightness.light),
       darkTheme: FsTheme.build(Brightness.dark),
       themeMode: ThemeMode.system,
-      home: HomeScreen(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore, targetProvider: targetProvider, incomingShares: incomingShares, textSharer: textSharer, recentTargets: recentTargets, videoFetcher: videoFetcher, entitlement: entitlement, billing: billing),
+      home: HomeScreen(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore, targetProvider: targetProvider, incomingShares: incomingShares, textSharer: textSharer, recentTargets: recentTargets, videoFetcher: videoFetcher, entitlement: entitlement, billing: billing, verifier: verifier),
     );
   }
 }

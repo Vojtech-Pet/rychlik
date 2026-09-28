@@ -2,6 +2,19 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:friendsend/monetization/entitlement_service.dart';
+import 'package:friendsend/monetization/purchase_verifier.dart';
+
+class _Verifier implements PurchaseVerifier {
+  VerificationResult result = VerificationResult.verified;
+  final calls = <(String, String)>[];
+  @override
+  Future<VerificationResult> verify({required String productId, required String purchaseToken}) async {
+    calls.add((productId, purchaseToken));
+    return result;
+  }
+}
+
+const _productId = 'friendsend_lifetime_unlock';
 
 void main() {
   late Directory root;
@@ -38,11 +51,12 @@ void main() {
     expect(sixth.remainingTrialSends, 0); // never negative
   });
 
-  test('unlock makes canSend true regardless of remaining count and stops counting', () async {
+  test('a verified purchase makes canSend true regardless of remaining count and stops counting', () async {
     final service = EntitlementService(root);
     await service.recordSuccessfulTargetedSend();
     await service.recordSuccessfulTargetedSend();
-    final unlocked = await service.unlock();
+    final unlocked = await service.applyPurchase(productId: _productId, purchaseToken: 'tok-1', verifier: _Verifier());
+    expect(unlocked.state, EntitlementState.fullVerified);
     expect(unlocked.unlocked, isTrue);
     expect(unlocked.canSend, isTrue);
     final after = await service.recordSuccessfulTargetedSend(); // unlimited: does nothing to the counter
@@ -55,9 +69,10 @@ void main() {
     final reopened = await EntitlementService(root).status();
     expect(reopened.remainingTrialSends, 3);
 
-    await EntitlementService(root).unlock();
+    await EntitlementService(root).applyPurchase(productId: _productId, purchaseToken: 'tok-1', verifier: _Verifier());
     final reopenedAfterUnlock = await EntitlementService(root).status();
     expect(reopenedAfterUnlock.unlocked, isTrue);
+    expect(reopenedAfterUnlock.state, EntitlementState.fullVerified);
   });
 
   test('an unreadable or missing entitlement file is treated as a fresh trial, never a crash', () async {
@@ -73,9 +88,9 @@ void main() {
     final events = <EntitlementStatus>[];
     final sub = service.changes.listen(events.add);
     await service.recordSuccessfulTargetedSend();
-    await service.unlock();
+    await service.applyPurchase(productId: _productId, purchaseToken: 'tok-1', verifier: _Verifier()); // pending, then settled: 2 more events
     await Future<void>.delayed(Duration.zero);
-    expect(events.length, 2);
+    expect(events.length, 3);
     expect(events.last.unlocked, isTrue);
     await sub.cancel();
   });

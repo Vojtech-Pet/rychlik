@@ -45,3 +45,33 @@ A single `_requireEntitlement()` check in `HomeScreen` gates every send entry po
 ## Physical S24 (user-confirmed, 2026-09-28)
 
 Trial exhaustion → Unlock screen: **confirmed**. After using up the free sends on the physical phone, both Choose app and More apps showed the Unlock screen ("napíše unlock") instead of sending, matching the emulator result. Real purchase was not attempted (no Play Console product yet, as expected). Individual acceptance points (exact-URL delivery to Messenger/WhatsApp, decrement on success only, More apps not decrementing) were not itemised by the user beyond this; treat the gate itself as physically confirmed, the itemised sub-checks as not separately re-verified on hardware.
+
+## Billing hardening (B1–B3, after v1)
+
+v1's client JSON (`{"unlocked": bool}`) was fine for functional trial testing but was **not** a real purchase protection: a billing "purchased" callback alone made it permanent, with no way back for a reinstall. Hardened before any real purchase can happen.
+
+### B1 — purchase state model
+
+`EntitlementState`: `trial → purchasePending → fullVerified | fullUnverified → restoreRequired`. A billing "purchased" callback now only starts verification (`applyPurchase`); it is never itself a permanent unlock. `fullUnverified` grants the same access as `fullVerified` (bounded grace period, default 3 days, configurable/injectable clock for tests) while verification keeps retrying; past the grace period it lapses to `restoreRequired`, never silently staying "unlocked" forever unverified. `EntitlementStatus.canSend`/`.unlocked` are unchanged computed properties, so none of the v1 gating code (`_requireEntitlement`, the picker, the Incoming Share Router) had to change.
+
+### B2 — restore / reinstall recovery
+
+`BillingAdapter.restorePurchases()` (Google Play Billing's `restorePurchases()` + purchase-stream replay) returns whatever the account already owns. `EntitlementSource.restoreFrom(record, verifier: ...)` re-runs the same verify-and-settle path as a fresh purchase (`applyPurchase` under the hood) — reusing all its idempotency/rejection handling. `main.dart` calls it once, best-effort, on every app start (never blocks startup, ignores errors) so a reinstall with an owned purchase self-heals without a tap; `UnlockScreen` also has an explicit **Restore purchases** button for a manual retry.
+
+### B3 — server verification boundary
+
+`PurchaseVerifier.verify(productId, purchaseToken) → verified | rejected | temporaryFailure`, kept separate from `BillingAdapter` so entitlement logic is tested with a fake verifier, never real payment code. `ServerPurchaseVerifier` (the production implementation used today, since no backend exists yet) **truthfully always returns `temporaryFailure`** — a real purchase gets grace-period access, never a silently-fabricated permanent unlock. Replace its body with a real backend call before relying on purchases in production. The product id (`friendsend_lifetime_unlock`) lives in exactly one place (`lib/monetization/product.dart`).
+
+### Evidence
+
+- `test/billing_hardening_test.dart` (16): the full B1–B3 acceptance list — trial exhaustion, verified purchase persists across restart, rejected purchase never unlocks (and leaves the pre-existing trial count untouched, not reset), temporary failure grants grace only, an expired grace period lapses to `restoreRequired` with no fake unlock, wrong product id is a no-op, duplicate/replayed purchase callbacks are idempotent (verifier not re-called), a different token is re-verified, fresh-install-with-owned-purchase restores to FULL, restore-with-nothing-owned stays trial, `retryPendingVerification` promotes a grace-period purchase once verified (or no-ops with nothing pending), `ServerPurchaseVerifier` never fabricates `verified`, one shared `EntitlementService` instance covers both FriendSend entry points.
+- `test/monetization_gate_test.dart`: existing 17 device/incoming-flow tests unchanged and still passing (gating logic untouched); added a Restore-purchases UI test (owned → unlocks; not owned → explains, stays blocked).
+- `test/entitlement_service_test.dart`: updated for the new API (`applyPurchase` in place of the removed `unlock()`); all 9 still pass.
+- Full Flutter suite: 172 passed. `flutter analyze`: no issues.
+- Emulator, real release APK (109.9 MB): app starts normally with the new best-effort auto-restore call on launch (no crash, no block); after exhausting the 5 free sends, **Restore purchases** truthfully reports "No previous purchase was found for this account." (no Play Store on this emulator) instead of unlocking (`artifacts/monetization/hardening_unlock_with_restore.png`, `hardening_restore_no_purchase.png`).
+
+### Not done
+
+- `ServerPurchaseVerifier` has no backend yet (by design, documented above) -- a real purchase today would sit in `fullUnverified` grace and then lapse to `restoreRequired`. Build the backend + swap it in before Play Console goes live.
+- No physical-device run of the hardened flow (only the emulator was used here); the S24 physical confirmation recorded earlier was against the pre-hardening v1 build.
+- The Play Console product still does not exist, so no real end-to-end purchase/restore was exercised against the actual store, only against the local `GooglePlayBillingAdapter` code paths that run when it's unavailable.

@@ -7,6 +7,7 @@ import 'package:friendsend/handoff/handoff_controller.dart';
 import 'package:friendsend/identity/device_identity.dart';
 import 'package:friendsend/monetization/billing_adapter.dart';
 import 'package:friendsend/monetization/entitlement_service.dart';
+import 'package:friendsend/monetization/purchase_verifier.dart';
 import 'package:friendsend/platform/incoming_share.dart';
 import 'package:friendsend/platform/share_bridge.dart';
 import 'package:friendsend/platform/share_targets.dart';
@@ -20,11 +21,12 @@ import 'package:friendsend/ui/theme/fs_theme.dart';
 
 /// An in-memory EntitlementSource a test can drive directly, without touching the filesystem.
 class _FakeEntitlement implements EntitlementSource {
-  _FakeEntitlement({int remaining = 5, bool unlocked = false}) : _status = EntitlementStatus(unlocked: unlocked, remainingTrialSends: remaining);
+  _FakeEntitlement({int remaining = 5, bool unlocked = false})
+      : _status = EntitlementStatus(state: unlocked ? EntitlementState.fullVerified : EntitlementState.trial, remainingTrialSends: remaining);
   EntitlementStatus _status;
   final _controller = StreamController<EntitlementStatus>.broadcast();
   int recordCalls = 0;
-  int unlockCalls = 0;
+  int unlockCalls = 0; // successful applyPurchase/restoreFrom calls that resulted in fullVerified
 
   @override
   Future<EntitlementStatus> status() async => _status;
@@ -36,18 +38,32 @@ class _FakeEntitlement implements EntitlementSource {
   Future<EntitlementStatus> recordSuccessfulTargetedSend() async {
     recordCalls++;
     if (!_status.unlocked && _status.remainingTrialSends > 0) {
-      _status = EntitlementStatus(unlocked: false, remainingTrialSends: _status.remainingTrialSends - 1);
+      _status = EntitlementStatus(state: EntitlementState.trial, remainingTrialSends: _status.remainingTrialSends - 1);
       _controller.add(_status);
     }
     return _status;
   }
 
   @override
-  Future<EntitlementStatus> unlock() async {
-    unlockCalls++;
-    _status = const EntitlementStatus(unlocked: true, remainingTrialSends: 0);
+  Future<EntitlementStatus> applyPurchase({required String productId, required String purchaseToken, required PurchaseVerifier verifier}) async {
+    final result = await verifier.verify(productId: productId, purchaseToken: purchaseToken);
+    _status = switch (result) {
+      VerificationResult.verified => const EntitlementStatus(state: EntitlementState.fullVerified, remainingTrialSends: 0),
+      VerificationResult.rejected => EntitlementStatus(state: EntitlementState.trial, remainingTrialSends: _status.remainingTrialSends),
+      VerificationResult.temporaryFailure => const EntitlementStatus(state: EntitlementState.fullUnverified, remainingTrialSends: 0),
+    };
+    if (_status.unlocked) unlockCalls++;
     _controller.add(_status);
     return _status;
+  }
+
+  @override
+  Future<EntitlementStatus> retryPendingVerification({required PurchaseVerifier verifier}) async => _status;
+
+  @override
+  Future<EntitlementStatus> restoreFrom(PurchaseRecord? record, {required PurchaseVerifier verifier}) async {
+    if (record == null) return _status;
+    return applyPurchase(productId: record.productId, purchaseToken: record.purchaseToken, verifier: verifier);
   }
 }
 
@@ -55,15 +71,23 @@ class _FakeBilling implements BillingAdapter {
   PurchaseOutcome outcome = PurchaseOutcome.purchased;
   String? price = '1,99 €';
   int purchaseCalls = 0;
+  PurchaseRecord? restoreRecord;
 
   @override
   Future<String?> lifetimeUnlockPrice() async => price;
 
   @override
-  Future<PurchaseOutcome> purchaseLifetimeUnlock() async {
+  Future<PurchaseAttempt> purchaseLifetimeUnlock() async {
     purchaseCalls++;
-    return outcome;
+    return switch (outcome) {
+      PurchaseOutcome.purchased => const PurchaseAttempt.purchased(PurchaseRecord(productId: 'friendsend_lifetime_unlock', purchaseToken: 'tok-1')),
+      PurchaseOutcome.cancelled => const PurchaseAttempt.cancelled(),
+      PurchaseOutcome.failed => const PurchaseAttempt.failed(),
+    };
   }
+
+  @override
+  Future<PurchaseRecord?> restorePurchases() async => restoreRecord;
 }
 
 class _Receiver implements FriendSendReceiverLike {
@@ -318,6 +342,27 @@ void main() {
       await t.pumpAndSettle();
       expect(find.byKey(const Key('unlock_error')), findsOneWidget);
       expect(entitlement.unlockCalls, 0);
+    });
+
+    testWidgets('Restore purchases with an owned purchase unlocks; with nothing owned it explains and stays blocked', (t) async {
+      final entitlement = _FakeEntitlement(remaining: 0);
+      final billing = _FakeBilling();
+      c.markPaired();
+      await pump(t, entitlement: entitlement, billing: billing);
+      receiver.emit(received());
+      await flush(t);
+      await t.tap(find.byKey(const Key('choose_app_button')));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('unlock_restore_button')));
+      await t.pumpAndSettle();
+      expect(find.text('No previous purchase was found for this account.'), findsOneWidget);
+      expect(find.byKey(const Key('unlock_title')), findsOneWidget);
+
+      billing.restoreRecord = const PurchaseRecord(productId: 'friendsend_lifetime_unlock', purchaseToken: 'tok-1');
+      await t.tap(find.byKey(const Key('unlock_restore_button')));
+      await t.pumpAndSettle();
+      expect(find.byKey(const Key('unlock_title')), findsNothing);
+      expect(find.byKey(const Key('choose_app_button')), findsOneWidget);
     });
 
     testWidgets('an unlocked user has unlimited sends and no trial badge', (t) async {

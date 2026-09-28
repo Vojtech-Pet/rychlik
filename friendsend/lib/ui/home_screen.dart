@@ -8,6 +8,7 @@ import '../platform/incoming_share.dart';
 import '../platform/media_bridge.dart';
 import '../monetization/billing_adapter.dart';
 import '../monetization/entitlement_service.dart';
+import '../monetization/purchase_verifier.dart';
 import '../platform/recent_targets.dart';
 import '../platform/share_bridge.dart';
 import '../platform/share_targets.dart';
@@ -39,6 +40,7 @@ class HomeScreen extends StatefulWidget {
     this.videoFetcher,
     this.entitlement = const AlwaysUnlockedEntitlement(),
     this.billing = const UnavailableBillingAdapter(),
+    this.verifier = const ServerPurchaseVerifier(),
   });
 
   static Widget _defaultScanner(BuildContext context) => const QrScanScreen();
@@ -58,6 +60,7 @@ class HomeScreen extends StatefulWidget {
   /// successful *targeted* send is ever counted against the trial.
   final EntitlementSource entitlement;
   final BillingAdapter billing;
+  final PurchaseVerifier verifier;
 
   final DeviceIdentity identity;
   final SecurePairingManager pairingManager;
@@ -84,7 +87,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _saveNote;
   bool _saving = false;
   int _videoRun = 0; // identifies the current download so a late result of a cancelled/replaced one is ignored
-  EntitlementStatus _entitlementStatus = const EntitlementStatus(unlocked: true, remainingTrialSends: 0);
+  EntitlementStatus _entitlementStatus = const EntitlementStatus(state: EntitlementState.fullVerified, remainingTrialSends: 0);
   bool _showUnlock = false;
   StreamSubscription<EntitlementStatus>? _entitlementSub;
 
@@ -142,9 +145,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_requireEntitlement()) widget.controller.chooseApp();
   }
 
-  Future<void> _onUnlocked() async {
-    final status = await widget.entitlement.unlock();
-    if (!mounted) return;
+  void _onPurchaseResolved(EntitlementStatus status) {
     setState(() {
       _entitlementStatus = status;
       _showUnlock = false;
@@ -439,7 +440,13 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     if (_showUnlock) {
-      return UnlockScreen(billing: widget.billing, onUnlocked: _onUnlocked, onNotNow: () => setState(() => _showUnlock = false));
+      return UnlockScreen(
+        billing: widget.billing,
+        entitlement: widget.entitlement,
+        verifier: widget.verifier,
+        onResolved: _onPurchaseResolved,
+        onNotNow: () => setState(() => _showUnlock = false),
+      );
     }
     final incoming = _incomingText;
     if (incoming != null) {
