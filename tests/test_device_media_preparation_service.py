@@ -111,3 +111,29 @@ def test_cancel_during_preparation_cleans_up_and_leaves_source_untouched(tmp_pat
     assert not any(cache_dir.iterdir()) if cache_dir.exists() else True
     assert source.exists()
     assert source.stat().st_size == artifact.size
+
+
+def test_plan_callback_reports_the_plan_kind_before_preparation_runs(tmp_path):
+    """Acceptance bug: the plan kind used to be published only after preparation finished, so a UI could not tell a
+    multi-minute transcode from a quick check."""
+    import rychlik.device.media.preparation_service as module
+
+    order: list[str] = []
+    real_run = module.run_preparation
+
+    def spying_run(*args, **kwargs):
+        order.append("run")
+        return real_run(*args, **kwargs)
+
+    for maker, name, expected in ((make_compatible_mp4, "p.mp4", PlanKind.PASSTHROUGH), (make_remux_mkv, "r.mkv", PlanKind.REMUX), (make_full_transcode_source, "t.webm", PlanKind.TRANSCODE_AUDIO_VIDEO)):
+        order.clear()
+        artifact = _artifact(maker(tmp_path / name))
+        service = _service(tmp_path / name.split(".")[0])
+        module.run_preparation = spying_run
+        try:
+            service.prepare(artifact, CAPS, plan_callback=lambda kind: order.append(kind.name))
+        finally:
+            module.run_preparation = real_run
+        assert order[0] == expected.name, (name, order)  # reported first, before any FFmpeg work
+        if expected != PlanKind.PASSTHROUGH:
+            assert order == [expected.name, "run"]

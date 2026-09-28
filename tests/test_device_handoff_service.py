@@ -453,3 +453,4 @@ def test_default_transport_is_secure_not_plain_http(tmp_path, monkeypatch):
 
 def receiver_never_logged(fixture) -> bool:
     return fixture.received_log() == []
+

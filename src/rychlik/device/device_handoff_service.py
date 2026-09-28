@@ -339,6 +339,7 @@ class DeviceHandoffService:
         )
 
         self._update_snapshot(handoff_id, state=HandoffState.CONNECTING, total_bytes=send_artifact.size)
+        self._emit(DeviceHandoffEvent(DeviceHandoffEventKind.HANDOFF_PROGRESS, handoff_id=handoff_id, device_id=device.device_id))
 
         def progress_cb(bytes_sent: int, total_bytes: int) -> None:
             self._update_snapshot(
@@ -369,10 +370,12 @@ class DeviceHandoffService:
         def progress_cb(processed_seconds, duration_seconds):
             fraction = (processed_seconds / duration_seconds) if (processed_seconds and duration_seconds) else None
             self._update_snapshot(handoff_id, preparation_progress=fraction)
+            self._maybe_emit_progress(handoff_id, device_id)  # throttled; lets a UI follow a long conversion
 
         try:
             prepared = self._media_preparation_service.prepare(
-                artifact, capabilities, preparation_id=preparation_id, progress_callback=progress_cb, cancel_event=cancel_event
+                artifact, capabilities, preparation_id=preparation_id, progress_callback=progress_cb, cancel_event=cancel_event,
+                plan_callback=lambda kind: self._on_plan(handoff_id, device_id, kind),
             )
         except MediaPreparationError as exc:
             if isinstance(exc, TranscodeFailed) and exc.cancelled:
@@ -390,6 +393,10 @@ class DeviceHandoffService:
             preparation_progress=1.0,
         )
         return prepared
+
+    def _on_plan(self, handoff_id: str, device_id: str, kind) -> None:
+        self._update_snapshot(handoff_id, preparation_kind=kind.value)
+        self._emit(DeviceHandoffEvent(DeviceHandoffEventKind.HANDOFF_PREPARING, handoff_id=handoff_id, device_id=device_id))
 
     def _finish_handoff(self, handoff_id, device_id, state, bytes_sent, failure_code) -> None:
         self._update_snapshot(handoff_id, state=state, bytes_sent=bytes_sent, failure_code=failure_code)

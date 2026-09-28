@@ -316,3 +316,44 @@ def test_real_cancel_during_transcode_handoff_e2e(http_fixture_server, tmp_path)
         device_service.stop()
     finally:
         receiver.stop()
+
+
+def test_snapshot_publishes_the_preparation_kind_during_a_real_transcode(http_fixture_server, tmp_path):
+    """Acceptance bug: preparation_kind was None for the whole REMUX/TRANSCODE phase (only set after it finished), so
+    the GUI showed 'Checking the file' during a transcode. Real Dart receiver, real FFmpeg; the FFmpeg run is held
+    open so the PREPARING window can be observed deterministically."""
+    import threading
+
+    import rychlik.device.media.preparation_service as prep_module
+
+    source = make_full_transcode_source(tmp_path / "source.webm", duration=1.0)
+    manager = _download_manager(tmp_path / "dl", max_active_transfers=1)
+    manager.start()
+    receiver = FriendSendSecureDartHarness(tmp_path / "receiver")
+    release = threading.Event()
+    real_run = prep_module.run_preparation
+
+    def held_run(*args, **kwargs):
+        assert release.wait(20)
+        return real_run(*args, **kwargs)
+
+    try:
+        _added, artifact = _download_real_fixture(manager, http_fixture_server, source, "kind-during", tmp_path / "dl")
+        identity, trust_store = _pair_secure(tmp_path, receiver)
+        device_service = DeviceHandoffService(transport=SecureFriendSendTransport(identity=identity, trust_store=trust_store))
+        device_service.start()
+        prep_module.run_preparation = held_run
+        handoff_id = device_service.send(receiver.device_id, artifact)
+        assert _wait_until(lambda: (device_service.snapshot(handoff_id).preparation_kind is not None), timeout=15)
+        during = device_service.snapshot(handoff_id)
+        assert during.state == HandoffState.PREPARING
+        assert during.preparation_kind == "TRANSCODE_AUDIO_VIDEO"
+        release.set()
+        assert _wait_until(lambda: device_service.snapshot(handoff_id).is_terminal, timeout=30)
+        assert device_service.snapshot(handoff_id).state == HandoffState.RECEIVED
+        device_service.stop()
+    finally:
+        release.set()
+        prep_module.run_preparation = real_run
+        receiver.stop()
+        manager.stop()

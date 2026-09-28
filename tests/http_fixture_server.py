@@ -18,6 +18,7 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        self.server.request_log.append(self.path)
         if self.path == "/normal.mp4":
             self._send_body(200, NORMAL_BODY, content_type="video/mp4")
         elif self.path == "/redirect":
@@ -211,6 +212,7 @@ class HttpFixtureServer:
         self._server.resumable_lock = threading.Lock()
         self._server.resumable_configs = {}
         self._server.resumable_last_request = {}
+        self._server.request_log = []
 
     @property
     def base_url(self) -> str:
@@ -228,6 +230,10 @@ class HttpFixtureServer:
         with self._server.track_lock:
             self._server.active_count = 0
             self._server.max_observed_active = 0
+
+    def request_log(self) -> list[str]:
+        """Every request path in arrival order (list.append is atomic)."""
+        return list(self._server.request_log)
 
     def configure_flaky(self, key: str, *, fail_until: int) -> None:
         """Requests 1..fail_until to /flaky/<key> return 503; request

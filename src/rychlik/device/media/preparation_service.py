@@ -106,6 +106,7 @@ class DeviceMediaPreparationService:
         preparation_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
         cancel_event: threading.Event | None = None,
+        plan_callback: Callable[[PlanKind], None] | None = None,
     ) -> PreparedDeviceMedia:
         preparation_id = preparation_id or str(uuid.uuid4())
 
@@ -119,6 +120,9 @@ class DeviceMediaPreparationService:
             if plan.failure_reason == PlanFailureReason.HDR_TRANSCODE_UNSUPPORTED:
                 raise HdrTranscodeUnsupported("HDR source requires SDR conversion, which is not implemented")
             raise NoCompatibleProfile("no known device media profile matches this source")
+
+        if plan_callback is not None:
+            plan_callback(plan.kind)  # lets callers show what is happening while the (long) preparation runs
 
         if plan.kind == PlanKind.PASSTHROUGH:
             return PreparedDeviceMedia(
