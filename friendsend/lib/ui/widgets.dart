@@ -83,7 +83,7 @@ class FsPrimaryButton extends StatelessWidget {
           disabledBackgroundColor: p.surface2,
           disabledForegroundColor: p.textDisabled,
           shape: const StadiumBorder(),
-          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          textStyle: const TextStyle(fontFamily: FsType.family, fontSize: 16, fontWeight: FontWeight.w600),
         ),
         child: Row(mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: [
           if (icon != null) ...[Icon(icon, size: FsSize.iconInline), const SizedBox(width: FsSpace.s8)],
@@ -113,7 +113,7 @@ class FsSecondaryButton extends StatelessWidget {
           foregroundColor: p.text,
           side: BorderSide(color: p.borderStrong),
           shape: const StadiumBorder(),
-          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          textStyle: const TextStyle(fontFamily: FsType.family, fontSize: 16, fontWeight: FontWeight.w600),
         ),
         child: Row(mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: [
           if (icon != null) ...[Icon(icon, size: FsSize.iconInline), const SizedBox(width: FsSpace.s8)],
@@ -141,7 +141,7 @@ class FsTextButton extends StatelessWidget {
       style: TextButton.styleFrom(
         foregroundColor: color,
         minimumSize: const Size(FsSize.touchTarget, FsSize.touchTarget),
-        textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        textStyle: const TextStyle(fontFamily: FsType.family, fontSize: 16, fontWeight: FontWeight.w600),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         if (icon != null) ...[Icon(icon, size: FsSize.iconInline), const SizedBox(width: FsSpace.s8)],

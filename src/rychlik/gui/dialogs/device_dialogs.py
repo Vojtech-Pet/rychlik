@@ -6,13 +6,10 @@ Text is truthful: nothing is shown as sent/received/online unless the real servi
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
-    QDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-    QVBoxLayout, QWidget,
+    QDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
 from rychlik.core.artifact import Artifact
@@ -27,6 +24,12 @@ STATE_TEXT = {
     DeviceState.TRUSTED_OFFLINE: "Trusted · Offline",
     DeviceState.IDENTITY_CHANGED: "Identity changed",
     DeviceState.UNPAIRED_DISCOVERED: "Not paired",
+}
+STATE_TONE = {
+    DeviceState.TRUSTED_ONLINE: "success",
+    DeviceState.TRUSTED_OFFLINE: "muted",
+    DeviceState.IDENTITY_CHANGED: "error",
+    DeviceState.UNPAIRED_DISCOVERED: "info",
 }
 STEPS = ("Prepare", "Send", "Verified")
 _TERMINAL = (HandoffState.RECEIVED, HandoffState.FAILED, HandoffState.CANCELLED)
@@ -44,6 +47,38 @@ def _muted(text: str = "") -> QLabel:
     label.setProperty("role", "muted")
     label.setWordWrap(True)
     return label
+
+
+class DeviceRowWidget(QWidget):
+    """One device: state dot + name, real state text, and (for a changed identity) what to do next."""
+
+    def __init__(self, row: DeviceRow, parent=None, *, dimmed: bool = False) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(10)
+        tone = STATE_TONE[row.state]
+        dot = QLabel("●")
+        dot.setProperty("tone", tone if tone != "muted" else "")
+        dot.setProperty("role", "muted" if tone == "muted" else "")
+        text = QVBoxLayout()
+        text.setSpacing(1)
+        self.name_label = QLabel(row.display_name)
+        font = self.name_label.font()
+        font.setWeight(font.Weight.DemiBold)
+        self.name_label.setFont(font)
+        self.state_label = QLabel(STATE_TEXT[row.state])
+        self.state_label.setProperty("role", "caption")
+        if row.state == DeviceState.IDENTITY_CHANGED:
+            self.state_label.setText(f"{STATE_TEXT[row.state]} · forget and pair again to continue")
+            self.state_label.setProperty("tone", "error")
+        text.addWidget(self.name_label)
+        text.addWidget(self.state_label)
+        layout.addWidget(dot)
+        layout.addLayout(text, 1)
+        if dimmed:
+            self.setEnabled(False)
 
 
 def confirm_forget(row: DeviceRow, parent=None) -> bool:
@@ -206,11 +241,14 @@ class SendToDeviceDialog(QDialog):
         rows = [r for r in self._controller.rows() if r.trusted]
         self.device_list.clear()
         for row in rows:
-            item = QListWidgetItem(f"{row.display_name}    {STATE_TEXT[row.state]}")
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, row.device_id)
+            widget = DeviceRowWidget(row, dimmed=not row.can_send)
+            item.setSizeHint(widget.sizeHint())
             if not row.can_send:
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable & ~Qt.ItemFlag.ItemIsEnabled)
             self.device_list.addItem(item)
+            self.device_list.setItemWidget(item, widget)
             if row.device_id == previous and row.can_send:
                 self.device_list.setCurrentItem(item)
         online = [r for r in rows if r.can_send]
@@ -280,9 +318,13 @@ class SendToDeviceDialog(QDialog):
     def _render_stepper(self, step: int, *, done: bool) -> None:
         parts = []
         for i, name in enumerate(STEPS):
-            mark = "●" if (i < step or (done and i == step and step == 2)) else ("◐" if i == step else "○")
-            parts.append(f"{mark} {name}")
-        self.stepper.setText("&nbsp;&nbsp;—&nbsp;&nbsp;".join(parts))
+            if i < step or (done and step == 2):
+                parts.append(f"● {name}")
+            elif i == step:
+                parts.append(f"<b>● {name}</b>")
+            else:
+                parts.append(f"○ {name}")
+        self.stepper.setText("&nbsp;&nbsp;›&nbsp;&nbsp;".join(parts))
 
     def _show_failure(self, err) -> None:
         self.select_page.hide()
@@ -325,9 +367,8 @@ class PairDeviceDialog(QDialog):
         layout.setContentsMargins(20, 16, 20, 16)
         layout.addWidget(_title("Pair a phone with Rýchlik"))
         layout.addWidget(_muted("1. Open FriendSend on your phone (same Wi-Fi network).\n2. Choose “Paste code from Rýchlik”.\n3. Paste the pairing code below."))
-        self.code_box = QPlainTextEdit()
+        self.code_box = QLineEdit()  # shows the start of the code; "Copy code" copies all of it
         self.code_box.setReadOnly(True)
-        self.code_box.setFixedHeight(90)
         layout.addWidget(self.code_box)
         self.copy_button = QPushButton("Copy code")
         self.copy_button.setProperty("variant", "primary")
@@ -361,13 +402,14 @@ class PairDeviceDialog(QDialog):
             self.status_label.setText("Couldn’t start pairing on this network. Check your Wi-Fi connection and try again.")
             self.copy_button.setEnabled(False)
             return
-        self.code_box.setPlainText(self._session.code_text)
+        self.code_box.setText(self._session.code_text)
+        self.code_box.setCursorPosition(0)
         self.copy_button.setEnabled(True)
         self.status_label.setText("Waiting for the phone…")
         self.tick()
 
     def _copy(self) -> None:
-        QGuiApplication.clipboard().setText(self.code_box.toPlainText())
+        QGuiApplication.clipboard().setText(self.code_box.text())
         self.status_label.setText("Code copied. Paste it in FriendSend…")
 
     def tick(self) -> None:
@@ -446,12 +488,12 @@ class DevicesPage(QWidget):
         rows = self._controller.rows()
         self.list.clear()
         for row in rows:
-            extra = ""
-            if row.state == DeviceState.IDENTITY_CHANGED:
-                extra = " — forget and pair again to continue"
-            item = QListWidgetItem(f"{row.display_name}    {STATE_TEXT[row.state]}{extra}")
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, row.device_id)
+            widget = DeviceRowWidget(row)
+            item.setSizeHint(widget.sizeHint())
             self.list.addItem(item)
+            self.list.setItemWidget(item, widget)
             if row.device_id == selected:
                 self.list.setCurrentItem(item)
         self.empty.setVisible(not rows)

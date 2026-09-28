@@ -12,6 +12,7 @@ import 'screens/pairing_screen.dart';
 import 'screens/target_picker.dart';
 import 'screens/transfer_screens.dart';
 import 'screens/trusted_screen.dart';
+import 'theme/fs_theme.dart';
 
 /// Chooses the approved screen for the controller's presentation state. Screens render controller state; they
 /// never invent one (Verifying, Received, Choosing-target and Handoff-accepted all come from real transitions).
@@ -80,7 +81,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final result = await showModalBottomSheet<PickerResult>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
+      backgroundColor: context.fs.surface,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => FutureBuilder<List<ShareTarget>>(
         future: targetsFuture,

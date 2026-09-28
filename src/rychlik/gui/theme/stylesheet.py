@@ -42,6 +42,10 @@ QFrame#BulkBar {{ background: {p.accent_tint}; border: 1px solid {p.accent}; bor
 QFrame#Card {{ background: {p.surface2}; border: 1px solid {p.border}; border-radius: 8px; }}
 QFrame#Card[selected="true"] {{ border-color: {p.accent}; background: {p.accent_tint}; }}
 QFrame#Banner {{ border-radius: 8px; }}
+QListWidget {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 8px; outline: 0; padding: 4px; }}
+QListWidget::item {{ border-radius: 6px; }}
+QListWidget::item:selected {{ background: {p.accent_tint}; }}
+QListWidget::item:hover:!selected {{ background: {p.surface2}; }}
 
 QLabel[role="caption"] {{ color: {p.text2}; font-size: {m.font_caption}px; }}
 QLabel[role="muted"] {{ color: {p.text2}; }}

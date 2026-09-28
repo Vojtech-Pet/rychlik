@@ -73,7 +73,7 @@ class TrustedComputerScreen extends StatelessWidget {
             child: Column(children: [
               _Row('Status', const FsBadge(label: 'Trusted', icon: Icons.verified_user_outlined)),
               Divider(color: p.border, height: 1),
-              _Row('Identity', Text(identityFingerprint(desktop.desktopPublicSigningKey), key: const Key('trusted_identity'), style: FsText.body(context).copyWith(fontFamily: 'monospace'))),
+              _Row('Identity', Text(identityFingerprint(desktop.desktopPublicSigningKey), key: const Key('trusted_identity'), style: FsText.body(context).copyWith(letterSpacing: 1.2, fontFeatures: const [FontFeature.tabularFigures()]))),
               Divider(color: p.border, height: 1),
               _Row('Paired', Text(formatPaired(desktop.pairedAtUtc), key: const Key('trusted_paired'), style: FsText.body(context))),
             ]),

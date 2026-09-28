@@ -23,7 +23,7 @@ class FsTheme {
     );
     TextStyle style(FsTextSpec s, Color color) =>
         TextStyle(fontFamily: FsType.family, fontSize: s.size, height: s.height, fontWeight: _weight(s.weight), color: color);
-    return ThemeData(
+    final theme = ThemeData(
       useMaterial3: true,
       brightness: brightness,
       colorScheme: scheme,
@@ -40,6 +40,8 @@ class FsTheme {
       appBarTheme: AppBarTheme(backgroundColor: p.background, foregroundColor: p.text, elevation: 0, scrolledUnderElevation: 0),
       snackBarTheme: SnackBarThemeData(backgroundColor: p.elevated, contentTextStyle: style(FsType.body, p.text)),
     );
+    // Every Material text slot (buttons, dialogs, inputs) gets the same family, not just the four above.
+    return theme.copyWith(textTheme: theme.textTheme.apply(fontFamily: FsType.family));
   }
 
   static FontWeight _weight(int w) => w >= 600 ? FontWeight.w600 : (w >= 500 ? FontWeight.w500 : FontWeight.w400);

@@ -33,6 +33,11 @@ def env(qapp, tmp_path):
     c.stop()
 
 
+def row_text(page, index):
+    labels = page.list.itemWidget(page.list.item(index)).findChildren(DD.QLabel)
+    return " ".join(label.text() for label in labels if label.text() != "●")
+
+
 def online(discovery, port=41000):
     discovery.on_found(DiscoveredFriendSendDevice("d1", FriendSendEndpoint("192.168.1.20", port), 1, PROFILE))
 
@@ -117,11 +122,11 @@ def test_pair_dialog_shows_real_code_and_detects_completion(env, monkeypatch):
     c, _, _, store, _ = env
     c._pairing_factory = lambda ident, ts: SecurePairingManager(identity=ident, trust_store=ts, bind_host="127.0.0.1")
     dlg = DD.PairDeviceDialog(c)
-    assert dlg.code_box.toPlainText().startswith("{") and dlg.status_label.text() == "Waiting for the phone…"
+    assert dlg.code_box.text().startswith("{") and dlg.status_label.text() == "Waiting for the phone…"
     assert dlg.expiry_label.text().startswith("Expires in")
     store.upsert(_trusted("phone-2"))
     dlg.tick()
-    assert dlg.paired_row is not None and "Paired with Pixel 8" in dlg.status_label.text() and dlg.code_box.toPlainText() == ""
+    assert dlg.paired_row is not None and "Paired with Pixel 8" in dlg.status_label.text() and dlg.code_box.text() == ""
     dlg.reject()
 
 
@@ -141,9 +146,9 @@ def test_devices_page_lists_states_and_forget_requires_confirmation(env, monkeyp
     c, _, discovery, store, _ = env
     store.upsert(_trusted())
     page = DD.DevicesPage(c)
-    assert "Trusted · Offline" in page.list.item(0).text()
+    assert row_text(page, 0).endswith("Trusted · Offline")
     online(discovery)
-    assert "Trusted · Online" in page.list.item(0).text()
+    assert row_text(page, 0).endswith("Trusted · Online")
     page.list.setCurrentRow(0)
     monkeypatch.setattr(DD, "confirm_forget", lambda row, parent=None: False)
     page.forget_selected()
@@ -151,7 +156,7 @@ def test_devices_page_lists_states_and_forget_requires_confirmation(env, monkeyp
     monkeypatch.setattr(DD, "confirm_forget", lambda row, parent=None: True)
     page.forget_selected()
     assert store.get("d1") is None
-    assert page.list.count() == 1 and "Not paired" in page.list.item(0).text()  # still visible on the LAN, no longer trusted
+    assert page.list.count() == 1 and row_text(page, 0).endswith("Not paired")  # still visible on the LAN, no longer trusted
     discovery.on_removed("d1")
     assert page.list.count() == 0 and page.empty.isVisibleTo(page)
 

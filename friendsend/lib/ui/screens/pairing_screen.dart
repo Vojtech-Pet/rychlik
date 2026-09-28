@@ -61,7 +61,7 @@ class _PairingScreenState extends State<PairingScreen> {
           const SizedBox(height: FsSpace.s24),
           FsCard(
             child: Column(children: const [
-              _Step(1, 'On your computer, open Rýchlik → Devices → Pair FriendSend.'),
+              _Step(1, 'On your computer, open Rýchlik › Devices › Pair FriendSend.'),
               SizedBox(height: FsSpace.s12),
               _Step(2, 'Copy the pairing code.'),
               SizedBox(height: FsSpace.s12),
