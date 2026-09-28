@@ -130,8 +130,17 @@ class MainActivity : FlutterActivity() {
         }
 
         return try {
+            // Prompt A17-E1: the physical temp file keeps its safe,
+            // UUID-derived name (TempCache never trusts a declared
+            // filename as a disk path) -- only the FileProvider's
+            // *advertised* OpenableColumns.DISPLAY_NAME changes, via the
+            // 4-arg getUriForFile overload (AndroidX Core 1.5.0+; this
+            // project resolves 1.13.1). The network-declared name can
+            // therefore never influence where anything is written, only
+            // what a recipient sees it called.
+            val safeDisplayName = sanitizeShareDisplayName(rawDisplayName = displayName, mimeType = mimeType)
             // Prompt A14 §53: content:// only, never file://.
-            val uri: Uri = FileProvider.getUriForFile(this, fileProviderAuthority, requested)
+            val uri: Uri = FileProvider.getUriForFile(this, fileProviderAuthority, requested, safeDisplayName)
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = mimeType
                 putExtra(Intent.EXTRA_STREAM, uri)
@@ -139,7 +148,9 @@ class MainActivity : FlutterActivity() {
             }
             // Prompt A14 §56/§57: the standard OS chooser -- no hard-coded
             // target package, no accessibility auto-click, no private API.
-            val chooser = Intent.createChooser(intent, displayName)
+            // Prompt A17-E1: a plain, generic chooser title -- the actual
+            // filename is now the URI's own DISPLAY_NAME, not this string.
+            val chooser = Intent.createChooser(intent, "Share with…")
             if (chooser.resolveActivity(packageManager) == null) {
                 "NO_SHARE_TARGET"
             } else {
@@ -150,4 +161,30 @@ class MainActivity : FlutterActivity() {
             "PLATFORM_ERROR"
         }
     }
+}
+
+/**
+ * Prompt A17-E1: turns a network-declared display name into a safe
+ * basename for FileProvider's DISPLAY_NAME column only -- never used as a
+ * filesystem path. Strips any directory component (so "../../evil.mp4"
+ * becomes just "evil.mp4", never escaping anywhere since it is never
+ * resolved against a directory at all), strips control characters and
+ * NUL, and falls back to a generic name when nothing sane remains.
+ *
+ * A top-level, Android-framework-free function (no `Context`/`Activity`
+ * dependency) so it is a plain JVM-testable unit, not something that
+ * needs a real Android runtime/instrumented test to exercise.
+ */
+fun sanitizeShareDisplayName(rawDisplayName: String, mimeType: String): String {
+    val basename = rawDisplayName.substringAfterLast('/').substringAfterLast('\\')
+    val cleaned = basename.filter { it.code >= 0x20 && it.code != 0x7f }.trim()
+    if (cleaned.isEmpty() || cleaned == "." || cleaned == "..") {
+        val extension = when {
+            mimeType.startsWith("video/") -> ".mp4"
+            mimeType.startsWith("audio/") -> ".m4a"
+            else -> ""
+        }
+        return "shared_file$extension"
+    }
+    return cleaned
 }

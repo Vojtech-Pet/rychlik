@@ -322,3 +322,60 @@ Trial/€1.99 Lifetime Unlock) or a final GUI/design gate be considered.
 
 WORKTREE:
 CLEAN (before commit)
+
+---
+
+A17-E1 ADDENDUM — Android Emulator Pairing / Secure Device Mode Validation (2026-09-28)
+
+STATUS (A17-E1): PARTIAL — emulator evidence gathered, two real bugs found and fixed
+A17 OVERALL STATUS: BLOCKED (unchanged; no physical Android device)
+
+BASELINE: c86ff989dca893d4cd274254499d9c94eb713603
+
+SOURCE CODE CHANGES:
+- friendsend/lib/handoff/handoff_controller.dart (new restoreTrustState)
+- friendsend/lib/main.dart (calls restoreTrustState at startup)
+- friendsend/test/handoff_controller_test.dart (+2 tests)
+- friendsend/android/app/src/main/kotlin/app/friendsend/friendsend/MainActivity.kt (4-arg FileProvider display name, sanitizeShareDisplayName, generic chooser title)
+- friendsend/android/app/build.gradle.kts (JUnit test dependency)
+- friendsend/android/app/src/test/kotlin/app/friendsend/friendsend/SanitizeShareDisplayNameTest.kt (new, 4 tests)
+No Python/desktop source changed.
+
+EMULATOR: AVD Medium_Phone, Android 17 (API 37), sdk_gphone16k_x86_64
+FRESH PAIRING PAYLOAD GENERATED: YES (local only, never printed or reused)
+EXPOSED OLD PAIRING SECRET REUSED: NO
+REAL PAIRING: PASS (real FriendSend UI, real A15 production path, security_profile = pinned-tls-signature-v1)
+PAIRING SECRET PERSISTENCE AUDIT: PASS (absent from desktop trust store, Android app files, logcat)
+FRIENDSEND RESTART TRUST: initially FAIL (bug 1), fixed, PASS on debug and release
+DESKTOP RESTART TRUST: PASS
+BOTH-SIDES RESTART TRUST: PASS
+TLS / SPKI PIN + DESKTOP ED25519 AUTH: PASS (real secure sends succeeded through the production transport; no plain-HTTP fallback exists in this path)
+REAL SECURE SEND / RECEIVED INTEGRITY: PASS (byte counts matched; SHA-256 verified by receiver before RECEIVED)
+CONTENT URI / SHARESHEET: PASS (real content:// URI, real system chooser opened) — emulator only
+ANDROID NSD ADVERTISEMENT + DESKTOP MDNS DISCOVERY: PASS in emulator (real NsdManager -> real zeroconf); emulator NAT address not directly dialable, test-only adb forward used for TCP. Does NOT close A15-PHYSICAL-MDNS-DISCOVERY.
+PASSTHROUGH / REMUX / TRANSCODE: PASS / PASS / PASS, originals unchanged
+CANCEL: PASS (cancelled at 4,456,448 of 6,566,667 bytes; desktop CANCELLED; receiver honest INCOMPLETE_TRANSFER; no false RECEIVED)
+TEMP CACHE / DISCARD / TTL: NOT RUN on emulator (release build not inspectable); existing Flutter tests cover it
+LOGCAT SECRET AUDIT: PASS
+PERMISSION / FILEPROVIDER AUDIT: PASS (merged release manifest unchanged: INTERNET only)
+
+TESTS/BUILDS AFTER FIXES:
+- flutter analyze: No issues found
+- flutter test: 60/60 (58 baseline + 2 new)
+- Kotlin JVM unit tests: 4/4 (new)
+- APK debug build: PASS
+- APK release build: PASS (51.7MB)
+- desktop suite: not re-run (no Python change); last full run 907/907 x3 in A17
+
+BUGS FOUND / FIXED: 2 (see docs/PHYSICAL_ANDROID_VALIDATION.md, "Android Emulator Validation"):
+1. Persistent trust not reflected in UI after restart (critical-blocker class "pairing required again after normal restart") — fixed.
+2. Shared file displayed as internal incoming-<uuid>.bin — fixed at FileProvider level; emulator Sharesheet preview chip still shows the internal name (needs confirmation on a real handset).
+
+NOTES:
+- The Android Studio flatpak GUI launch of the emulator crashed (exit 134); the SDK emulator run directly with -gpu swiftshader_indirect works.
+- The release APK is still signed with the debug key (pre-existing, non-blocking).
+
+A9-CRASH-RANGE-E2E: CLOSED
+A14-PHYSICAL-ANDROID-SHARE-SMOKE: OPEN (emulator does not satisfy the physical-device requirement)
+A15-PHYSICAL-MDNS-DISCOVERY: OPEN (emulator does not satisfy the physical-device requirement)
+NEXT REQUIRED ACTION: physical Android A17 validation only.

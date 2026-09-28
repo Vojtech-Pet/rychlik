@@ -9,6 +9,7 @@ import 'package:friendsend/platform/share_bridge.dart';
 import 'package:friendsend/protocol/protocol.dart';
 import 'package:friendsend/receiver/receiver_server.dart';
 import 'package:friendsend/receiver/temp_cache.dart';
+import 'package:friendsend/security/desktop_trust_store.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -101,5 +102,46 @@ void main() {
     final bridge = ShareBridge(channel: const MethodChannel('app.friendsend/share'));
     final result = await bridge.shareFile(path: '/tmp/x', displayName: 'x', mimeType: 'application/octet-stream');
     expect(result, ShareResult.platformError);
+  });
+
+  // Prompt A17-E1: a real emulator force-stop/relaunch exposed that a cold
+  // start never re-derived AppState.paired from an existing, real, on-disk
+  // DesktopTrustStore -- the app fell back to the initial unpaired
+  // "Paste pairing payload" screen even though persistent trust (Prompt
+  // A15) was fully intact. restoreTrustState() is the fix; these tests
+  // use a real DesktopTrustStore against a real temp directory, never a
+  // mock, matching this controller's existing real-receiver test style
+  // above.
+  group('restoreTrustState (Prompt A17-E1)', () {
+    late Directory trustDir;
+
+    setUp(() {
+      trustDir = Directory.systemTemp.createTempSync('friendsend_trust_store_test_');
+    });
+
+    tearDown(() {
+      if (trustDir.existsSync()) trustDir.deleteSync(recursive: true);
+    });
+
+    test('an existing trusted desktop on disk restores the paired state on a cold start', () async {
+      final trustStore = DesktopTrustStore(trustDir);
+      await trustStore.upsert(
+        TrustedDesktop(
+          desktopInstanceId: 'desktop-1',
+          desktopPublicSigningKey: List<int>.filled(32, 7),
+          pairedAtUtc: DateTime.utc(2026, 1, 1).toIso8601String(),
+        ),
+      );
+
+      expect(controller.current.state, AppState.unpaired); // sanity: cold-start default before restoring
+      await controller.restoreTrustState(trustStore);
+      expect(controller.current.state, AppState.paired);
+    });
+
+    test('no trusted desktop on disk leaves a fresh install unpaired', () async {
+      final trustStore = DesktopTrustStore(trustDir); // never written to -- matches a genuine fresh install
+      await controller.restoreTrustState(trustStore);
+      expect(controller.current.state, AppState.unpaired);
+    });
   });
 }

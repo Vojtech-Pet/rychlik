@@ -42,3 +42,9 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // Prompt A17-E1: a plain JVM unit test for sanitizeShareDisplayName()
+    // (no Android runtime/emulator needed -- it is a Context-free function).
+    testImplementation("junit:junit:4.13.2")
+}

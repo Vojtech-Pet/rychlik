@@ -68,6 +68,7 @@ Future<void> main() async {
     trustStore: trustStore,
   );
   final controller = HandoffController(receiver: receiver, tempCache: tempCache, shareBridge: ShareBridge());
+  await controller.restoreTrustState(trustStore);
   await controller.runStartupCleanup();
   controller.startPeriodicCleanup();
 

@@ -6,6 +6,7 @@ import '../protocol/protocol.dart';
 import '../receiver/receiver_interface.dart';
 import '../receiver/receiver_server.dart' show ReceiverEvent, ReceiverEventKind;
 import '../receiver/temp_cache.dart';
+import '../security/desktop_trust_store.dart';
 
 /// App-presentation state machine (Prompt A14 §76) -- distinct from the
 /// wire-protocol [HandoffState] enum. Never redefines wire acknowledgement
@@ -86,6 +87,19 @@ class HandoffController {
   HandoffUiSnapshot get current => _current;
 
   void markPaired() => _emit(_current.copyWith(state: AppState.paired));
+
+  /// Prompt A17-E1: on a cold start, restores the `paired` UI state when a
+  /// trusted desktop already exists on disk. Without this, a normal
+  /// force-stop/relaunch (or device reboot) left the app showing the
+  /// initial unpaired "Paste pairing payload" screen even though the real
+  /// persistent trust (Prompt A15) was intact underneath -- the security
+  /// state was never actually lost, only the UI failed to reflect it,
+  /// which reads to a real user as "I have to pair again every time".
+  Future<void> restoreTrustState(DesktopTrustStore trustStore) async {
+    if ((await trustStore.allDesktops()).isNotEmpty) {
+      markPaired();
+    }
+  }
 
   /// Periodic, bounded cleanup check -- a single timer, not one per file
   /// (§66/§127).
