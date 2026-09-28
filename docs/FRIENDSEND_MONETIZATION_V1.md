@@ -40,3 +40,8 @@ A single `_requireEntitlement()` check in `HomeScreen` gates every send entry po
 - No server-side purchase/receipt verification (a client-reported `purchased` status is trusted as-is); acceptable for a one-time low-price unlock in v1, worth revisiting if fraud shows up.
 - A restore-purchases entry point for a reinstall (Play Billing's `restorePurchases`/purchase history) is not wired in — a user who reinstalls today has to re-earn or re-buy.
 - Physical-device run (only the emulator was used here).
+
+
+## Physical S24 (user-confirmed, 2026-09-28)
+
+Trial exhaustion → Unlock screen: **confirmed**. After using up the free sends on the physical phone, both Choose app and More apps showed the Unlock screen ("napíše unlock") instead of sending, matching the emulator result. Real purchase was not attempted (no Play Console product yet, as expected). Individual acceptance points (exact-URL delivery to Messenger/WhatsApp, decrement on success only, More apps not decrementing) were not itemised by the user beyond this; treat the gate itself as physically confirmed, the itemised sub-checks as not separately re-verified on hardware.
