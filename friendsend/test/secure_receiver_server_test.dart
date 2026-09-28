@@ -29,6 +29,12 @@ class _SecureClient {
     return jsonDecode(await utf8.decoder.bind(resp).join()) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> hello() async {
+    final req = await _client.getUrl(Uri.parse('https://127.0.0.1:$port/hello'));
+    final resp = await req.close();
+    return jsonDecode(await utf8.decoder.bind(resp).join()) as Map<String, dynamic>;
+  }
+
   Future<(int, Map<String, dynamic>)> offer(
     Map<String, dynamic> body, {
     required String desktopId,
@@ -348,6 +354,17 @@ void main() {
     } finally {
       expiryClient.close();
       await expiryServer.stop();
+    }
+  });
+
+  test('hello advertises the additive media capability profiles (Prompt A16 §98)', () async {
+    final hello = await client.hello();
+    final profiles = (hello['media_profiles'] as List).cast<String>();
+    expect(profiles, contains('friendsend-generic-video-v1'));
+    expect(profiles, contains('friendsend-generic-audio-v1'));
+    // §99-101: never a per-social-app capability.
+    for (final forbidden in ['whatsapp', 'messenger', 'telegram']) {
+      expect(profiles.any((p) => p.toLowerCase().contains(forbidden)), isFalse);
     }
   });
 }

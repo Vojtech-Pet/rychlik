@@ -205,6 +205,31 @@ attributes.
 
 ---
 
+## A16 note: no new physical-device debt entry added
+
+Prompt A16 (Device Compatibility / Automatic Transcoding Pipeline) added
+a real, fully-tested automatic media preparation pipeline in front of
+Device Mode sends (probe -> plan -> remux/transcode -> re-validate),
+proven end-to-end with 6 real full-stack tests
+(`tests/test_device_media_handoff_e2e.py`) against the real Dart secure
+receiver, including a real remux, a real full VP9/Opus transcode, and a
+real cancel-mid-transcode.
+
+**No new "A16 transcode smoke" physical-device debt item is added here.**
+The one physical gap A16 shares with everything else in Device Mode --
+confirming behavior on a real, physical Android device rather than the
+Dart receiver core/APK-build/`aapt`-inspection proofs already performed
+-- is the exact same gap already tracked by
+`A14-PHYSICAL-ANDROID-SHARE-SMOKE` above. A16's prepared/transcoded media
+is just another artifact flowing through that same untested physical
+receive+Sharesheet path; closing `A14-PHYSICAL-ANDROID-SHARE-SMOKE` on a
+real device closes A16's physical tail too, and re-testing it separately
+here would be redundant. `A9-CRASH-RANGE-E2E` and
+`A15-PHYSICAL-MDNS-DISCOVERY` are untouched by A16 and remain OPEN as
+above.
+
+---
+
 *(Future validation debt items should be appended below, each with the
 same Status/Blocking/Description/Why-not-closed/What-would-close-it
 shape.)*

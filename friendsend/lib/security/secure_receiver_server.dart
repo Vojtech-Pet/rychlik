@@ -102,6 +102,7 @@ class SecureFriendSendReceiverServer implements FriendSendReceiverLike {
       'display_name': config.displayName,
       'security_profile': 'pinned-tls-signature-v1',
       'tls_spki_sha256': tlsIdentity.spkiSha256Hex,
+      'media_profiles': config.mediaProfiles.toList(),
     });
     await _sendJson(request, HttpStatus.ok, body);
   }

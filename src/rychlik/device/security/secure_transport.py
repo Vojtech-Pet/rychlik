@@ -92,6 +92,14 @@ class SecureFriendSendTransport(FriendSendTransport):
         self._identity = identity
         self._trust_store = trust_store
 
+    @property
+    def trust_store(self) -> FriendSendTrustStore:
+        """Exposed read-only so other Device Mode components (e.g. the
+        Prompt A16 media capability query) can resolve a trusted device's
+        pin/endpoint using this transport's own trust store, without a
+        second, possibly-inconsistent one."""
+        return self._trust_store
+
     def probe(self, endpoint) -> ProbeResult:
         raise NotImplementedError(
             "SecureFriendSendTransport.probe() is not part of the A15 acceptance gate; "

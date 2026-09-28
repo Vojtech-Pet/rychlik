@@ -21,6 +21,7 @@ class ReceiverConfig {
     this.protocolVersion = friendSendProtocolVersion,
     this.maxPayloadBytes,
     this.supportedMimeTypes,
+    this.mediaProfiles = const {'friendsend-generic-video-v1', 'friendsend-generic-audio-v1'},
   });
 
   final String deviceId;
@@ -34,6 +35,13 @@ class ReceiverConfig {
 
   /// Null means "accept any declared MIME type" for this MVP.
   final Set<String>? supportedMimeTypes;
+
+  /// Prompt A16 §98: additive capability advertisement -- the set of
+  /// `DeviceMediaProfile.profile_id`s this receiver actually implements
+  /// (see rychlik.device.media.capability_profile on the desktop side).
+  /// Never a per-social-app capability, and never a claim any specific
+  /// downstream app accepts the result (§99).
+  final Set<String> mediaProfiles;
 }
 
 enum ReceiverEventKind { progress, received, failed, cancelled }

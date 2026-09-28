@@ -29,17 +29,42 @@ from rychlik.device.contracts import (
     DeviceHandoffSnapshot,
     FriendSendDevice,
     FriendSendEndpoint,
+    HandoffErrorCode,
     HandoffState,
     UnknownDeviceError,
     UnsupportedCapabilityError,
     UnsupportedProtocolError,
 )
+from rychlik.device.media.capability_profile import DeviceMediaCapabilities
+from rychlik.device.media.capability_query import CapabilityQueryFailedError, fetch_device_media_capabilities
+from rychlik.device.media.preparation_service import (
+    DeviceMediaPreparationService,
+    HdrTranscodeUnsupported,
+    MediaPreparationError,
+    MediaProbeFailed,
+    NoCompatibleProfile,
+    PreparedMediaInvalid,
+    TempStorageError,
+    TranscodeFailed,
+    TranscoderUnavailable,
+)
 from rychlik.device.pairing import PairingManager, PairingPayload
 from rychlik.device.registry import PairedDeviceRegistry
+from rychlik.device.security.secure_transport import SecureFriendSendTransport
 from rychlik.device.transport import FriendSendTransport, HttpFriendSendTransport, SendOutcome
 
 _DEFAULT_CHUNK_SIZE = 256 * 1024
 _PROGRESS_EVENT_MIN_INTERVAL_SECONDS = 0.1  # §115: coalesced, not per-chunk
+
+_PREPARATION_FAILURE_CODES = {
+    MediaProbeFailed: HandoffErrorCode.MEDIA_PROBE_FAILED,
+    NoCompatibleProfile: HandoffErrorCode.NO_COMPATIBLE_PROFILE,
+    HdrTranscodeUnsupported: HandoffErrorCode.HDR_TRANSCODE_UNSUPPORTED,
+    TranscoderUnavailable: HandoffErrorCode.TRANSCODER_UNAVAILABLE,
+    TranscodeFailed: HandoffErrorCode.TRANSCODE_FAILED,
+    PreparedMediaInvalid: HandoffErrorCode.PREPARED_MEDIA_INVALID,
+    TempStorageError: HandoffErrorCode.TEMP_STORAGE_ERROR,
+}
 
 
 def _utc_now() -> datetime:
@@ -49,6 +74,7 @@ def _utc_now() -> datetime:
 class DeviceHandoffEventKind(Enum):
     DEVICE_PAIRED = "DEVICE_PAIRED"
     HANDOFF_STARTED = "HANDOFF_STARTED"
+    HANDOFF_PREPARING = "HANDOFF_PREPARING"  # Prompt A16
     HANDOFF_PROGRESS = "HANDOFF_PROGRESS"
     HANDOFF_RECEIVED = "HANDOFF_RECEIVED"
     HANDOFF_FAILED = "HANDOFF_FAILED"
@@ -75,6 +101,7 @@ class DeviceHandoffService:
         transport: FriendSendTransport | None = None,
         registry: PairedDeviceRegistry | None = None,
         pairing_manager: PairingManager | None = None,
+        media_preparation_service: DeviceMediaPreparationService | None = None,
         max_concurrent_handoffs: int = 1,  # §68
         chunk_size: int = _DEFAULT_CHUNK_SIZE,
         chunk_delay: float = 0.0,
@@ -88,6 +115,13 @@ class DeviceHandoffService:
         # default is the pinned-tls-signature-v1 secure transport.
         self._transport = transport or self._default_secure_transport()
         self._registry = registry or PairedDeviceRegistry()
+        # Prompt A16 §102: automatic compatibility preparation is the
+        # default for a normal send -- no separate expert opt-in needed.
+        # Only ever consulted when self._transport is the secure profile
+        # (see _run_handoff) -- the legacy plain-HTTP profile never
+        # attempts media preparation.
+        self._media_preparation_service = media_preparation_service or DeviceMediaPreparationService()
+        self._media_preparation_service.start()
         self._pairing_manager = pairing_manager or PairingManager(clock=clock)
         self._max_concurrent_handoffs = max_concurrent_handoffs
         self._chunk_size = chunk_size
@@ -194,16 +228,11 @@ class DeviceHandoffService:
             raise ArtifactUnavailableError(f"artifact file no longer exists: {artifact.local_path}")
 
         handoff_id = str(uuid.uuid4())  # §21: fresh randomness every send
-        request = DeviceHandoffRequest(
-            handoff_id=handoff_id,
-            device_id=device_id,
-            artifact_id=artifact.artifact_id,
-            display_name=artifact.filename,
-            mime_type=artifact.mime_type,
-            size_bytes=artifact.size,
-            sha256=artifact.sha256,
-            preferred_filename=artifact.filename,
-        )
+        # The actual DeviceHandoffRequest (sha256/size/mime/filename) is
+        # only built once preparation (if any) finalizes which Artifact
+        # -- original or derived -- is actually sent (§63/§79 of the A16
+        # prompt: it would be wrong to advertise the source hash while
+        # streaming transcoded bytes).
         cancel_event = threading.Event()
         snapshot = DeviceHandoffSnapshot(
             handoff_id=handoff_id,
@@ -222,7 +251,7 @@ class DeviceHandoffService:
 
         if self._executor is None:
             raise RuntimeError("DeviceHandoffService is not started")
-        self._executor.submit(self._run_handoff, device, request, artifact.local_path, cancel_event)
+        self._executor.submit(self._run_handoff, device, artifact, handoff_id, cancel_event)
         return handoff_id
 
     def cancel(self, handoff_id: str) -> bool:
@@ -245,38 +274,104 @@ class DeviceHandoffService:
 
     # --- worker -------------------------------------------------------------
 
-    def _run_handoff(self, device: FriendSendDevice, request: DeviceHandoffRequest, artifact_path, cancel_event) -> None:
-        self._update_snapshot(request.handoff_id, state=HandoffState.CONNECTING)
+    def _run_handoff(self, device: FriendSendDevice, artifact: Artifact, handoff_id: str, cancel_event: threading.Event) -> None:
+        preparation_id = handoff_id  # one preparation per handoff, §95
+        send_artifact = artifact
+        media_kind = artifact.mime_type.split("/", 1)[0]
+
+        # Prompt A16 §20/§21: only attempted for the secure profile,
+        # using its own trust store as the authenticated capability
+        # source -- the legacy plain-HTTP profile never runs this.
+        if isinstance(self._transport, SecureFriendSendTransport) and media_kind in ("video", "audio"):
+            trusted = self._transport.trust_store.get(device.device_id)
+            if trusted is not None:
+                try:
+                    capabilities = fetch_device_media_capabilities(trusted)
+                except CapabilityQueryFailedError:
+                    capabilities = None  # §24: query failure falls back to direct passthrough, never a hard failure
+
+                if capabilities is not None and not capabilities.is_empty:
+                    prepared = self._prepare_media(handoff_id, device.device_id, preparation_id, artifact, capabilities, cancel_event)
+                    if prepared is None:
+                        return  # terminal failure/cancel already recorded by _prepare_media
+                    send_artifact = prepared.artifact
+
+        request = DeviceHandoffRequest(
+            handoff_id=handoff_id,
+            device_id=device.device_id,
+            artifact_id=send_artifact.artifact_id,
+            display_name=send_artifact.filename,
+            mime_type=send_artifact.mime_type,
+            size_bytes=send_artifact.size,
+            sha256=send_artifact.sha256,
+            preferred_filename=send_artifact.filename,
+        )
+
+        self._update_snapshot(handoff_id, state=HandoffState.CONNECTING, total_bytes=send_artifact.size)
 
         def progress_cb(bytes_sent: int, total_bytes: int) -> None:
             self._update_snapshot(
-                request.handoff_id, state=HandoffState.TRANSFERRING, bytes_sent=bytes_sent, total_bytes=total_bytes
+                handoff_id, state=HandoffState.TRANSFERRING, bytes_sent=bytes_sent, total_bytes=total_bytes
             )
-            self._maybe_emit_progress(request.handoff_id, request.device_id)
+            self._maybe_emit_progress(handoff_id, device.device_id)
 
         outcome: SendOutcome = self._transport.send(
             device,
             request,
-            artifact_path,
+            send_artifact.local_path,
             chunk_size=self._chunk_size,
             progress_callback=progress_cb,
             cancel_event=cancel_event,
             chunk_delay=self._chunk_delay,
         )
 
+        self._finish_handoff(handoff_id, device.device_id, outcome.state, outcome.bytes_sent, outcome.failure_code)
+        self._media_preparation_service.discard(preparation_id)  # §86/§87: no-op if PASSTHROUGH (never allocated)
+
+    def _prepare_media(self, handoff_id, device_id, preparation_id, artifact, capabilities: DeviceMediaCapabilities, cancel_event):
+        """Returns the `PreparedDeviceMedia`, or `None` if a terminal
+        failure/cancellation was already recorded (caller must return
+        immediately in that case)."""
+        self._update_snapshot(handoff_id, state=HandoffState.PREPARING)
+        self._emit(DeviceHandoffEvent(DeviceHandoffEventKind.HANDOFF_PREPARING, handoff_id=handoff_id, device_id=device_id))
+
+        def progress_cb(processed_seconds, duration_seconds):
+            fraction = (processed_seconds / duration_seconds) if (processed_seconds and duration_seconds) else None
+            self._update_snapshot(handoff_id, preparation_progress=fraction)
+
+        try:
+            prepared = self._media_preparation_service.prepare(
+                artifact, capabilities, preparation_id=preparation_id, progress_callback=progress_cb, cancel_event=cancel_event
+            )
+        except MediaPreparationError as exc:
+            if isinstance(exc, TranscodeFailed) and exc.cancelled:
+                self._finish_handoff(handoff_id, device_id, HandoffState.CANCELLED, 0, None)
+            else:
+                code = _PREPARATION_FAILURE_CODES.get(type(exc), HandoffErrorCode.TRANSCODE_FAILED)
+                self._finish_handoff(handoff_id, device_id, HandoffState.FAILED, 0, code)
+            return None
+
         self._update_snapshot(
-            request.handoff_id, state=outcome.state, bytes_sent=outcome.bytes_sent, failure_code=outcome.failure_code
+            handoff_id,
+            preparation_kind=prepared.plan_kind.value,
+            target_profile_id=prepared.target_profile_id,
+            preparation_warnings=tuple(w.value for w in prepared.warnings),
+            preparation_progress=1.0,
         )
+        return prepared
+
+    def _finish_handoff(self, handoff_id, device_id, state, bytes_sent, failure_code) -> None:
+        self._update_snapshot(handoff_id, state=state, bytes_sent=bytes_sent, failure_code=failure_code)
         kind = {
             HandoffState.RECEIVED: DeviceHandoffEventKind.HANDOFF_RECEIVED,
             HandoffState.FAILED: DeviceHandoffEventKind.HANDOFF_FAILED,
             HandoffState.CANCELLED: DeviceHandoffEventKind.HANDOFF_CANCELLED,
-        }[outcome.state]
-        self._emit(DeviceHandoffEvent(kind, handoff_id=request.handoff_id, device_id=request.device_id))
+        }[state]
+        self._emit(DeviceHandoffEvent(kind, handoff_id=handoff_id, device_id=device_id))
 
         with self._lock:
-            self._cancel_events.pop(request.handoff_id, None)
-            self._last_progress_emit.pop(request.handoff_id, None)
+            self._cancel_events.pop(handoff_id, None)
+            self._last_progress_emit.pop(handoff_id, None)
 
     def _update_snapshot(self, handoff_id: str, **changes) -> None:
         with self._lock:

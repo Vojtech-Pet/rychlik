@@ -118,6 +118,14 @@ class HandoffErrorCode(Enum):
     AUTH_REPLAY = "AUTH_REPLAY"
     CHALLENGE_EXPIRED = "CHALLENGE_EXPIRED"
     DEVICE_IDENTITY_MISMATCH = "DEVICE_IDENTITY_MISMATCH"
+    # Prompt A16 (device media compatibility preparation):
+    MEDIA_PROBE_FAILED = "MEDIA_PROBE_FAILED"
+    NO_COMPATIBLE_PROFILE = "NO_COMPATIBLE_PROFILE"
+    TRANSCODER_UNAVAILABLE = "TRANSCODER_UNAVAILABLE"
+    TRANSCODE_FAILED = "TRANSCODE_FAILED"
+    TEMP_STORAGE_ERROR = "TEMP_STORAGE_ERROR"
+    HDR_TRANSCODE_UNSUPPORTED = "HDR_TRANSCODE_UNSUPPORTED"
+    PREPARED_MEDIA_INVALID = "PREPARED_MEDIA_INVALID"
 
 
 class HandoffState(Enum):
@@ -126,9 +134,12 @@ class HandoffState(Enum):
     fixture receiver never implements Android Sharesheet, so claiming it
     would be a lie (§26). `RECEIVED` means only that FriendSend verified
     the complete payload arrived intact -- never that any further app or
-    person received/viewed it (§23/§24)."""
+    person received/viewed it (§23/§24). `PREPARING` (Prompt A16 §70-72)
+    is a separate phase before CONNECTING -- while active, no network
+    transfer is happening yet (bytes_sent stays 0)."""
 
     CREATED = "CREATED"
+    PREPARING = "PREPARING"
     CONNECTING = "CONNECTING"
     TRANSFERRING = "TRANSFERRING"
     RECEIVED = "RECEIVED"
@@ -179,6 +190,16 @@ class DeviceHandoffSnapshot:
     total_bytes: int
     progress_fraction: float | None
     failure_code: HandoffErrorCode | None = None
+    # Prompt A16: additive, GUI-safe media preparation fields -- never a
+    # subprocess/handle reference. `preparation_kind`/`preparation_
+    # warnings` carry the media planner's own bounded string values
+    # (e.g. "REMUX", "ADDITIONAL_AUDIO_DROPPED"), not an enum imported
+    # from rychlik.device.media, keeping this contracts module free of a
+    # dependency on the media package.
+    preparation_kind: str | None = None
+    preparation_progress: float | None = None
+    target_profile_id: str | None = None
+    preparation_warnings: tuple[str, ...] = ()
 
     @property
     def is_terminal(self) -> bool:
