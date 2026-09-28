@@ -17,6 +17,7 @@ from rychlik.gui.device_mode import DeviceModeController
 from rychlik.gui.dialogs.device_dialogs import DevicesPage, PairDeviceDialog, ShareSelectorDialog
 from rychlik.gui.download_manager_widget import DownloadManagerWidget
 from rychlik.gui.main_window import MainWindow
+from rychlik.share.share_link_service import ShareLinkService
 from rychlik.gui.theme.manager import ThemeManager
 
 
@@ -33,10 +34,11 @@ def main() -> int:
         QMessageBox.critical(None, "Rýchlik", f"Failed to start the download manager:\n{exc}")
         return 1
 
+    link_service = ShareLinkService()
     devices = DeviceModeController()
     devices.start()  # discovery problems are reported by the controller, never fatal
     widget = DownloadManagerWidget(
-        manager, theme=themes.theme, share_launcher=lambda artifact, parent: ShareSelectorDialog(artifact, devices, parent).exec()
+        manager, theme=themes.theme, share_launcher=lambda artifact, parent: ShareSelectorDialog(artifact, devices, parent, link_service=link_service).exec()
     )
     devices_page = DevicesPage(devices)
     window = MainWindow(

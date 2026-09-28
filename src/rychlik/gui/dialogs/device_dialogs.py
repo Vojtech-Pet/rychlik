@@ -100,8 +100,8 @@ class ShareSelectorDialog(QDialog):
 
 
 class ShareByLinkDialog(QDialog):
-    """Reports only what ShareLinkService really produced. There is no public URL, QR code or tunnel wired
-    in this build, so none is shown (never a fake link)."""
+    """Existing Share-by-Link behaviour (ShareLinkService.create_link), restyled. It reports exactly what
+    the service produced: status, and a public address only if the service really holds one."""
 
     def __init__(self, artifact: Artifact, parent=None, *, link_service: ShareLinkService | None = None) -> None:
         super().__init__(parent)
@@ -114,10 +114,15 @@ class ShareByLinkDialog(QDialog):
         result = service.create_link(LinkShareRequest(artifact=artifact))
         self.result = result
         if result.status == ShareStatus.FAILED:
-            text = "Couldn’t create a share link."
+            text = f"Share link failed: {result.error}"
         else:
-            text = ("A share record was created, but link sharing is not available in this version yet: "
-                    "no web address is published, so nobody can open it.")
+            text = f"Share link created\nStatus: {result.status.name}"
+            link = service.get_link(result.share_id)
+            public_url = getattr(link, "public_url", None)
+            if public_url:
+                text += f"\n{public_url}"
+            else:
+                text += "\nNo public web address is published yet, so nobody can open this link."
         self.status_label = _muted(text)
         layout.addWidget(self.status_label)
         close = QPushButton("Close")

@@ -161,3 +161,72 @@ def test_share_by_link_never_claims_a_public_link(env):
     dlg = DD.ShareByLinkDialog(artifact)
     assert dlg.result.status in (DD.ShareStatus.ACTIVE, DD.ShareStatus.CREATING, DD.ShareStatus.OFFLINE, DD.ShareStatus.FAILED)
     assert "http" not in dlg.status_label.text().lower()
+
+
+# --- I5.1: Share by Link keeps its pre-redesign behaviour and is independent of Send to device ----------------------------
+
+
+class _SpyLinks(DD.ShareLinkService):
+    def __init__(self):
+        super().__init__()
+        self.requests = []
+
+    def create_link(self, request):
+        self.requests.append(request)
+        return super().create_link(request)
+
+
+def test_share_by_link_invokes_the_existing_link_service_and_shows_its_status(env, monkeypatch):
+    c, handoff, _, _, artifact = env
+    links = _SpyLinks()
+    opened = []
+    monkeypatch.setattr(DD.QDialog, "exec", lambda self: opened.append(self) or 0)
+    sel = DD.ShareSelectorDialog(artifact, c, link_service=links)
+    sel.link_button.click()
+    link_dialog = next(d for d in opened if isinstance(d, DD.ShareByLinkDialog))
+    assert [r.artifact for r in links.requests] == [artifact]
+    assert link_dialog.status_label.text().startswith("Share link created\nStatus: CREATING")
+    assert handoff.calls == []  # the device branch was not touched
+
+
+def test_send_to_device_and_share_by_link_are_independent_branches(env):
+    c, _, _, store, artifact = env
+    store.upsert(_trusted())
+    links = _SpyLinks()
+    assert DD.ShareSelectorDialog(artifact, c, link_service=links).link_button.isEnabled()
+    no_devices = DD.ShareSelectorDialog(artifact, None, link_service=links)
+    assert no_devices.link_button.isEnabled() and not no_devices.device_button.isEnabled()
+
+
+def test_completed_download_share_action_reaches_link_flow_end_to_end(env, qapp, http_fixture_server, tmp_path, monkeypatch):
+    """completed download -> widget.share(entry) -> Share selector -> Share by link -> ShareLinkService."""
+    import time
+
+    from rychlik.core.download_manager_service import DownloadManagerConfig, DownloadManagerService
+    from rychlik.gui.download_manager_widget import DownloadManagerWidget
+
+    c, *_ = env
+    manager = DownloadManagerService(config=DownloadManagerConfig(database_path=tmp_path / "state.db"))
+    manager.start()
+    links = _SpyLinks()
+    opened = []
+    monkeypatch.setattr(DD.QDialog, "exec", lambda self: opened.append(self) or 0)
+    widget = DownloadManagerWidget(manager, share_launcher=lambda art, parent: DD.ShareSelectorDialog(art, c, parent, link_service=links).exec() and None or opened[-1].link_button.click())
+    try:
+        dest = tmp_path / "dl"
+        dest.mkdir()
+        widget.submit_download(f"{http_fixture_server.base_url}/normal.mp4", str(dest))
+        entry_id = None
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and entry_id is None:
+            qapp.processEvents()
+            done = [i for i in manager.snapshot(include_history=True).items if i.task_state.name == "COMPLETED"]
+            entry_id = done[0].queue_entry_id if done else None
+            time.sleep(0.02)
+        assert entry_id is not None
+        widget.share(entry_id)
+        assert len(links.requests) == 1 and links.requests[0].artifact.filename.endswith(".mp4")
+        assert any(isinstance(d, DD.ShareByLinkDialog) for d in opened)
+    finally:
+        widget.shutdown()
+        manager.stop()
