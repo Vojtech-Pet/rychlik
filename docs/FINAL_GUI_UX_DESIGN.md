@@ -83,7 +83,7 @@ Source of truth: `DownloadManagerService` (`hold`, `release_hold`, `pause_transf
 
 A state machine with almost no navigation: `PAIRING -> READY -> RECEIVING -> VERIFYING -> RECEIVED -> CHOOSE APP -> HANDOFF`.
 No tabs, drawer, inbox, history or settings tree. The only secondary screen is "Trusted computer" (header icon), which
-holds Forget. Setup (F01-F04) is visually distinct from everyday use (F05+): different hierarchy, no payload controls once paired.
+holds Forget. Setup (F01-F04) is visually distinct from everyday use (F05+): different hierarchy, no pairing-code controls once paired.
 
 ## 6. Design tokens (source: `design/final_design_tokens.json`)
 
@@ -161,6 +161,8 @@ Both themes share layout; only surface, text and border tokens change. Accent st
 colors for text (fill colors remain for bars/glyphs). Mobile cards use a soft shadow in light, a 1 px border in dark. Follow the system theme by default
 with a manual override on desktop (Settings > Appearance). Do not copy desktop QSS colors into Flutter; consume `final_design_tokens.json`.
 
+**Wording rule.** User-facing copy says "pairing code" (FriendSend field: "Paste code from Rýchlik"); "payload" is an internal protocol term.
+
 ## 12. Accessibility
 
 - Contrast: 50 audited pairs pass (text >= 4.5:1, graphics >= 3:1); `text.disabled` is exempt and never carries information. See `CONTRAST_AUDIT.md`.
@@ -211,7 +213,7 @@ white text on plain error red, mis-anchored annotation over the FriendSend heade
 1. Real fonts: mockups use Noto Sans/Roboto stand-ins; re-check widths with Inter.
 2. Share-target ordering (recent vs alphabetical vs pinned) and whether to cap the grid at 8 before "More apps...".
 3. Real app icons in the picker come from the system; the padding/mask style for non-adaptive icons is untested.
-4. Desktop name in the phone's "Trusted computer" card: the pairing payload currently carries no display name (record shows null), so the design says "Rýchlik / Your computer".
+4. Desktop name in the phone's "Trusted computer" card: the pairing data currently carries no display name (record shows null), so the design says "Rýchlik / Your computer".
 5. Whether bulk "Send..." should exist in the first implementation (single-file send may ship first).
 6. QR pairing is not designed: the current pairing is paste-based; a QR option would need its own design and protocol decision.
 7. Slovak strings and the longer-label behavior of toolbar/table columns.
@@ -223,7 +225,7 @@ white text on plain error red, mis-anchored annotation over the FriendSend heade
 2. **Endpoint refresh.** A17-E1 showed the phone's port changes on every app start. "Trusted - Online" and sending need discovery to refresh the stored endpoint (`with_endpoint`) before connecting.
 3. **Identity changed** maps to TLS pin / device-identity mismatch results; there is no persisted "identity changed" flag today, so the state is derived from the last failed check. "Resolve..." opens the forget flow only.
 4. **FriendSend states.** Current `AppState` has unpaired/paired/receiving/received/error. New: verifying, preparing-to-share, choosing, handed-off, cancelled, no-network. Discard and Share buttons are currently placeholders (`onPressed: () {}`) and must be wired.
-5. **Share-target picker** needs `ShareTargetResolver`, package-visibility `<queries>` for `ACTION_SEND` by MIME type, targeted-package intents, and the permanent More apps... fallback. Today `autoShare` opens the system chooser immediately; the design replaces that with the F10 picker. Independent of Device Mode transport/security.
+5. **Share-target picker** needs `ShareTargetResolver`, package-visibility `<queries>` for `ACTION_SEND` by MIME type, targeted-package intents, and the permanent More apps... fallback. Today `autoShare` opens the system chooser immediately; the design replaces that with the F10 picker. `More apps...` is a separate row under the grid ("Open Android Sharesheet"), not a seventh tile, and the picker must never replace the system Sharesheet path (Direct Share people/conversations exist only there). Independent of Device Mode transport/security.
 6. **Preparing progress:** `DeviceHandoffSnapshot` exposes only a fraction. "Converted 1:12 of 2:48" needs processed time/duration (available inside the A16 preparation progress but not on the snapshot) or must be dropped.
 7. **Share by Link extras** (Open in browser, QR, Share via phone) are design placeholders.
 8. **Assets to replace:** the 24 px raster icons in `assets/*.zip` and the v3 QSS pixel/`pt` mix; use tokens and the single stroke icon set.

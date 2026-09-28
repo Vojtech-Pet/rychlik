@@ -60,7 +60,10 @@ CSS = """
 .tile{display:flex;flex-direction:column;align-items:center;gap:7px;height:92px;padding-top:6px;text-align:center}
 .tile .ico{width:52px;height:52px;border-radius:16px;display:grid;place-items:center;font-size:20px;font-weight:700;color:#fff}
 .tile span{font-size:12px;line-height:16px;color:var(--text);max-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tile.more .ico{background:color-mix(in srgb,var(--text) 12%,transparent);color:var(--text)}
+.morerow{display:flex;align-items:center;gap:12px;min-height:52px;margin-top:10px;padding:0 16px;border-radius:16px;background:color-mix(in srgb,var(--text) 7%,transparent)}
+.morerow b{font-size:15px;font-weight:600}
+.morerow .cap{margin-left:auto}
+.morerow .ic{color:var(--text2)}
 .dlgm{position:absolute;left:24px;right:24px;top:50%;transform:translateY(-50%);background:var(--elev);border-radius:28px;padding:24px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
 .dlgm .row{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
 .sys{background:#2b2b31;color:#e6e6ea;border-radius:28px 28px 0 0}
@@ -100,7 +103,7 @@ def hero(ic, cls, title, text, size=44, small=False):
 def unpaired(theme, w, h, filled=False, error=False):
     code = '{"protocol_version":1,"security_profile":"pinned-tls-signature-v1","pairing_session_id":"9c1e…","desktop_endpoint":{"host":"192.168.1.20","port":41873},"secret":"••••••••", …}'
     fld = (f'<div class="field filled">{code}</div>' if filled else
-           f'<div class="field {"err" if error else ""}">Paste pairing payload<div class="paste"><div class="btn secondary sm">{icon("copy", 18)}Paste</div></div></div>')
+           f'<div class="field {"err" if error else ""}">Paste code from Rýchlik<div class="paste"><div class="btn secondary sm">{icon("copy", 18)}Paste</div></div></div>')
     if error:
         fld = '<div class="field filled err">hello world</div>'
     msg = ""
@@ -189,15 +192,18 @@ def received(theme, w, h):
 def tiles(w, apps):
     cols = max(3, (w - 40) // 84)
     items = "".join(f'<div class="tile"><div class="ico" style="background:{c}">{ch}</div><span>{n}</span></div>' for n, ch, c in apps)
-    items += f'<div class="tile more"><div class="ico">{icon("grid", 26)}</div><span>More apps…</span></div>'
     return f'<div class="grid" style="grid-template-columns:repeat({cols},1fr)">{items}</div>'
+
+
+def more_row():
+    return (f'<div class="morerow">{icon("grid", 22)}<b>More apps…</b><span class="cap">Open Android Sharesheet</span></div>')
 
 
 def picker(theme, w, h, apps=None):
     apps = apps if apps is not None else APPS[:6]
     sheet = (f'<div class="sheet"><div class="grab"></div><div class="h2">Where do you want to send it?</div>'
              f'<div class="frow" style="margin-top:12px"><div class="fic thumb" style="width:36px;height:36px;border-radius:10px">{icon("video", 18)}</div><span class="p" style="color:var(--text)">holiday.mp4 · 198 MB</span></div>'
-             f'{tiles(w, apps)}<div class="cap" style="text-align:center">Pick an app, then choose the person inside that app.</div>'
+             f'{tiles(w, apps)}{more_row()}<div class="cap" style="text-align:center;margin-top:10px">Pick an app, then choose the person inside that app.</div>'
              f'<div style="margin-top:6px">{btn("Discard", "dtert")}</div></div>')
     return page(theme, w, h, received_body(), overlay=f'<div class="scrim"></div>{sheet}')
 
@@ -304,6 +310,6 @@ def components(theme, w=1000, h=820):
             f'<div style="height:14px"></div><div class="card" style="text-align:center"><span class="c-warning">{icon("warning", 32)}</span><div class="h2" style="margin-top:6px">Error state</div><div class="p">Title, one sentence, one action.</div></div>')
     body = (f'<div class="h2" style="margin-bottom:18px">FriendSend - component sheet ({theme})</div><div style="display:flex;gap:28px;flex-wrap:wrap">'
             f'{sect("Buttons (52 dp, pill)", btns)}{sect("Status chips (icon + text)", chips)}{sect("Progress + cards", prog + "<div style=height:18px></div>" + card)}'
-            f'{sect("Share target tiles (84 x 92 dp)", "<div style=width:340px>" + tile + "</div>")}</div>')
+            f'{sect("Share target tiles (84 x 92 dp) + system row", "<div style=width:340px>" + tile + more_row() + "</div>")}</div>')
     return (f'<!doctype html><html data-theme="{theme}"><head><meta charset="utf-8"><!-- NON-PRODUCTION DESIGN PROTOTYPE --><style>{base_css()}{CSS}</style></head>'
             f'<body class="mob"><div class="ph" style="padding:28px 32px;width:{w}px;height:{h}px;overflow:auto">{body}</div></body></html>')

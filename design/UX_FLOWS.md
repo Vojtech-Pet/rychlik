@@ -88,7 +88,7 @@ and Cancel. No codec, CRF, container or FFmpeg wording ever appears in the defau
 F09 Received (auto-opens) F10 "Where do you want to send it?"
    tiles = installed apps that resolve ACTION_SEND for the received MIME type  (dynamic, from Android at runtime)
    tap tile  -> targeted ACTION_SEND with the FileProvider content:// URI -> the target app shows ITS OWN recipient chooser
-   More apps... -> normal Android Sharesheet (F11)
+   More apps... (its own row under the grid, labelled "Open Android Sharesheet", never a tile) -> normal Android Sharesheet (F11)
    zero tiles -> F19 "No compatible apps found"
    return from target app -> F12 "Handed off to <app>" (HANDOFF_ACCEPTED only; delivery is unknowable)
    Done / Discard -> temporary file removed
@@ -141,3 +141,10 @@ Second group for every queued item: Priority > High / Normal / Low, Move up, Mov
 Move up/down are disabled with the reason. Third group: Cancel (also reachable from hover actions and the bulk bar).
 Bulk bar: Pause, Resume, Hold, Release, Priority, Cancel | Send... (completed only), Delete. No reorder in bulk.
 The Queues view (D26) is the place for explicit order: three priority bands, position numbers, drag handle and arrows.
+
+## 12. Wording and picker rules (second review)
+
+- User-facing text says **pairing code** ("Paste code from Rýchlik"). "Payload" is an internal protocol term and never appears in the UI.
+- The FriendSend picker is a hybrid: quick app targets plus a separate system-level row. `More apps...` is visually separate from installed apps because it opens a
+  different level, the Android Sharesheet, which can show Direct Share people and conversations that FriendSend cannot and must not reproduce.
+- Review criterion: the custom picker must never replace or hide the system Sharesheet path.
