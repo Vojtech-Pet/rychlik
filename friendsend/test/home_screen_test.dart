@@ -153,12 +153,15 @@ void main() {
 
   testWidgets('malformed pairing paste shows a bounded error, never a raw crash (§18)', (tester) async {
     await _pumpHome(tester, controller: controller, pairingManager: pairingManager);
-    await tester.enterText(find.byKey(const Key('pairing_paste_field')), 'not json at all');
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('pairing_pair_button')));
-    await tester.pump();
-    await tester.pump();
-    expect(find.byKey(const Key('pairing_error')), findsOneWidget);
+    bool pairEnabled() => tester.widget<FilledButton>(find.descendant(of: find.byKey(const Key('pairing_pair_button')), matching: find.byType(FilledButton))).onPressed != null;
+    expect(pairEnabled(), isFalse); // nothing pasted yet
+    for (final junk in ['not json at all', 'https://www.facebook.com/share/v/1AbCdEf/', '{"a": 1}', '[]']) {
+      await tester.enterText(find.byKey(const Key('pairing_paste_field')), junk);
+      await tester.pump();
+      expect(find.byKey(const Key('pairing_error')), findsOneWidget, reason: junk);
+      expect(find.text('This does not look like a pairing code.'), findsOneWidget, reason: junk);
+      expect(pairEnabled(), isFalse, reason: 'Pair must stay disabled for: $junk');
+    }
     expect(find.byKey(const Key('unpaired_message')), findsOneWidget);
   });
 
@@ -231,10 +234,9 @@ void main() {
     };
     await tester.enterText(find.byKey(const Key('pairing_paste_field')), jsonEncode(payload));
     await tester.pump();
-    await tester.tap(find.byKey(const Key('pairing_pair_button')));
-    await tester.pump();
-    await tester.pump();
     expect(find.byKey(const Key('pairing_error')), findsOneWidget);
+    expect(find.textContaining('expired'), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.descendant(of: find.byKey(const Key('pairing_pair_button')), matching: find.byType(FilledButton))).onPressed, isNull);
   });
 
   testWidgets('a real receive drives the widget from ready to the received state (§74/§80)', (tester) async {

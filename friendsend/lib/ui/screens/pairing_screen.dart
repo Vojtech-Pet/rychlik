@@ -5,9 +5,13 @@ import '../theme/fs_theme.dart';
 import '../widgets.dart';
 
 class PairingScreen extends StatefulWidget {
-  const PairingScreen({super.key, required this.onPair, this.error, this.busy = false});
+  const PairingScreen({super.key, required this.onPair, this.error, this.busy = false, this.validate});
 
   final void Function(String code) onPair;
+
+  /// Syntactic check of the pasted text (no network): returns a user-facing problem, or null when it looks like a
+  /// usable pairing code. Pair stays disabled until it returns null.
+  final String? Function(String code)? validate;
   final String? error;
   final bool busy;
 
@@ -32,7 +36,10 @@ class _PairingScreenState extends State<PairingScreen> {
   @override
   Widget build(BuildContext context) {
     final p = context.fs;
-    final hasText = _controller.text.trim().isNotEmpty;
+    final text = _controller.text.trim();
+    final localError = text.isEmpty ? null : widget.validate?.call(text);
+    final shownError = localError ?? (text.isEmpty ? widget.error : null);
+    final canPair = text.isNotEmpty && localError == null;
     if (widget.busy) {
       return FsScreen(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -48,7 +55,7 @@ class _PairingScreenState extends State<PairingScreen> {
     }
     return FsScreen(
       bottom: Column(mainAxisSize: MainAxisSize.min, children: [
-        FsPrimaryButton(key: const Key('pairing_pair_button'), label: 'Pair', onPressed: hasText ? () => widget.onPair(_controller.text.trim()) : null),
+        FsPrimaryButton(key: const Key('pairing_pair_button'), label: 'Pair', onPressed: canPair ? () => widget.onPair(text) : null),
         const SizedBox(height: FsSpace.s8),
         Text('Your paired desktop will be remembered.', style: FsText.caption(context)),
       ]),
@@ -74,9 +81,9 @@ class _PairingScreenState extends State<PairingScreen> {
             decoration: BoxDecoration(
               color: p.surface,
               borderRadius: BorderRadius.circular(FsRadius.large),
-              border: Border.all(color: widget.error != null ? p.error : p.border, width: widget.error != null ? 1.5 : 1),
+              border: Border.all(color: shownError != null ? p.error : p.border, width: shownError != null ? 1.5 : 1),
             ),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               TextField(
                 key: const Key('pairing_paste_field'),
                 controller: _controller,
@@ -86,25 +93,28 @@ class _PairingScreenState extends State<PairingScreen> {
                 style: FsText.body(context),
                 decoration: InputDecoration(border: InputBorder.none, hintText: 'Paste code from Rýchlik', hintStyle: FsText.muted(context), isCollapsed: true),
               ),
+              if (shownError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: FsSpace.s8),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Icon(Icons.warning_amber_rounded, size: 16, color: p.errorText),
+                    const SizedBox(width: FsSpace.s6),
+                    Expanded(child: Text(shownError, key: const Key('pairing_error'), style: FsText.caption(context, color: p.errorText))),
+                  ]),
+                ),
               const SizedBox(height: FsSpace.s8),
-              OutlinedButton.icon(
+              Align(
+                alignment: Alignment.centerRight,
+                child: OutlinedButton.icon(
                 key: const Key('pairing_paste_button'),
                 onPressed: _paste,
                 icon: const Icon(Icons.content_paste, size: 18),
                 label: const Text('Paste'),
                 style: OutlinedButton.styleFrom(foregroundColor: p.text, side: BorderSide(color: p.borderStrong), shape: const StadiumBorder(), minimumSize: const Size(0, 40)),
+                ),
               ),
             ]),
           ),
-          if (widget.error != null)
-            Padding(
-              padding: const EdgeInsets.only(top: FsSpace.s8),
-              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Icon(Icons.warning_amber_rounded, size: 16, color: p.errorText),
-                const SizedBox(width: FsSpace.s6),
-                Expanded(child: Text(widget.error!, key: const Key('pairing_error'), style: FsText.caption(context, color: p.errorText))),
-              ]),
-            ),
         ]),
       ),
     );

@@ -145,6 +145,23 @@ class _HomeScreenState extends State<HomeScreen> {
     if (s.handoffId != null && s.filePath != null) await widget.controller.discardCurrent(s.handoffId!, s.filePath!);
   }
 
+  /// Same checks completePairing would fail on, minus the network part, so an obviously wrong paste (a URL, random
+  /// text, an old code) never enables Pair.
+  String? _validateCode(String code) {
+    try {
+      final payload = widget.pairingManager.parse(code);
+      if (payload.protocolVersion != widget.pairingManager.protocolVersion) {
+        return 'This code is from a different version of Rýchlik. Update both apps and try again.';
+      }
+      if (payload.isExpired) return 'This code expired. Create a new pairing code in Rýchlik.';
+      return null;
+    } on PairingFormatException {
+      return 'This does not look like a pairing code.';
+    } catch (_) {
+      return 'This does not look like a pairing code.';
+    }
+  }
+
   Future<void> _completePairing(String code) async {
     widget.controller.beginPairing();
     try {
@@ -195,7 +212,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _screenFor(HandoffUiSnapshot s) {
     switch (s.state) {
       case AppState.unpaired:
-        return PairingScreen(onPair: _completePairing, error: s.pairingError);
+        return PairingScreen(onPair: _completePairing, error: s.pairingError, validate: _validateCode);
       case AppState.pairing:
         return PairingScreen(onPair: _completePairing, busy: true);
       case AppState.ready:
