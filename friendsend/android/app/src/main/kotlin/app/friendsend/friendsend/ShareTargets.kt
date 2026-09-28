@@ -12,7 +12,7 @@ import android.util.LruCache
 import java.io.ByteArrayOutputStream
 
 /** One activity Android reports as able to handle ACTION_SEND for the file's MIME type. */
-data class RawShareTarget(val packageName: String, val className: String, val label: String)
+data class RawShareTarget(val packageName: String, val className: String, val label: String, val social: Boolean = false)
 
 fun componentId(packageName: String, className: String): String = "$packageName/$className"
 
@@ -30,14 +30,15 @@ fun parseComponentId(id: String?): Pair<String, String>? {
  * No hard-coded provider names anywhere -- whatever the system resolves is offered, minus FriendSend itself.
  */
 object ShareTargetPolicy {
-    const val MAX_TARGETS = 12
+    const val MAX_TARGETS = 24
 
     fun select(raw: List<RawShareTarget>, ownPackage: String, max: Int = MAX_TARGETS): List<RawShareTarget> {
         val seenComponents = HashSet<String>()
         val seenPackageLabel = HashSet<String>()
         val out = ArrayList<RawShareTarget>()
         val ordered = raw.sortedWith(
-            compareBy<RawShareTarget>({ it.label.ifBlank { it.packageName }.lowercase() }, { it.packageName }, { it.className }),
+            // Apps Android itself categorises as social/messaging come first (the system's own metadata, not a name list).
+            compareBy<RawShareTarget>({ !it.social }, { it.label.ifBlank { it.packageName }.lowercase() }, { it.packageName }, { it.className }),
         )
         for (t in ordered) {
             if (t.packageName == ownPackage || t.packageName.isEmpty() || t.className.isEmpty()) continue
@@ -69,13 +70,16 @@ class ShareTargetResolver(private val context: Context) {
         val raw = query(mimeType).mapNotNull { info ->
             val a = info.activityInfo ?: return@mapNotNull null
             if (!a.exported) return@mapNotNull null
-            RawShareTarget(a.packageName, a.name, info.loadLabel(pm)?.toString().orEmpty())
+            RawShareTarget(a.packageName, a.name, info.loadLabel(pm)?.toString().orEmpty(), isSocial(a.applicationInfo))
         }
         return ShareTargetPolicy.select(raw, context.packageName).map { t ->
             val id = componentId(t.packageName, t.className)
             mapOf("id" to id, "label" to t.label, "icon" to iconFor(id, t))
         }
     }
+
+    private fun isSocial(app: android.content.pm.ApplicationInfo?): Boolean =
+        app != null && android.os.Build.VERSION.SDK_INT >= 26 && app.category == android.content.pm.ApplicationInfo.CATEGORY_SOCIAL
 
     /** True only if this exact component still resolves for the MIME type (an app may have been uninstalled). */
     fun isStillAvailable(mimeType: String, packageName: String, className: String): Boolean =

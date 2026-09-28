@@ -36,6 +36,17 @@ class ShareTargetPolicyTest {
     }
 
     @Test
+    fun socialAppsComeFirstThenAlphabetical_evenWhenTheyWouldBeCutOffByTheLimit() {
+        val many = (1..40).map { t("p.app$it", label = "App%02d".format(it)) } + listOf(
+            RawShareTarget("z.messenger", "z.messenger.Send", "Zed Messenger", social = true),
+            RawShareTarget("y.chat", "y.chat.Send", "Yak Chat", social = true),
+        )
+        val out = ShareTargetPolicy.select(many, "own")
+        assertEquals(listOf("Yak Chat", "Zed Messenger", "App01"), out.take(3).map { it.label })
+        assertEquals(ShareTargetPolicy.MAX_TARGETS, out.size)
+    }
+
+    @Test
     fun listIsBounded() {
         val many = (1..40).map { t("p.app$it", label = "App%02d".format(it)) }
         assertEquals(ShareTargetPolicy.MAX_TARGETS, ShareTargetPolicy.select(many, "own").size)

@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:friendsend/handoff/handoff_controller.dart';
 import 'package:friendsend/identity/device_identity.dart';
 import 'package:friendsend/platform/incoming_share.dart';
+import 'package:friendsend/platform/recent_targets.dart';
 import 'package:friendsend/platform/share_bridge.dart';
 import 'package:friendsend/platform/share_targets.dart';
 import 'package:friendsend/receiver/receiver_interface.dart';
@@ -61,6 +62,15 @@ class _Sharer implements TextSharer {
   }
 }
 
+class _Recents implements RecentTargetsStore {
+  _Recents(this.ids);
+  List<String> ids;
+  @override
+  Future<List<String>> load() async => ids;
+  @override
+  Future<void> record(String targetId) async => ids = [targetId, ...ids.where((e) => e != targetId)];
+}
+
 class _Targets implements ShareTargetProvider {
   final requestedMime = <String>[];
   @override
@@ -71,6 +81,7 @@ class _Targets implements ShareTargetProvider {
 }
 
 void main() {
+  orderTests();
   group('ShareBridge text', () {
     const channel = MethodChannel('test.share');
     final calls = <MethodCall>[];
@@ -176,7 +187,7 @@ void main() {
       if (root.existsSync()) root.deleteSync(recursive: true);
     });
 
-    Future<void> pump(WidgetTester t, _Source source) async {
+    Future<void> pump(WidgetTester t, _Source source, {RecentTargetsStore? recents}) async {
       t.view.physicalSize = const Size(780, 1688);
       t.view.devicePixelRatio = 2;
       addTearDown(t.view.reset);
@@ -184,7 +195,7 @@ void main() {
         theme: FsTheme.build(Brightness.dark),
         home: HomeScreen(
           identity: const DeviceIdentity(deviceId: 'd1', displayName: 'Phone'), pairingManager: pairing, controller: c,
-          targetProvider: targets, incomingShares: source, textSharer: sharer,
+          targetProvider: targets, incomingShares: source, textSharer: sharer, recentTargets: recents ?? const NoRecentTargets(),
         ),
       ));
       await t.pump();
@@ -201,13 +212,12 @@ void main() {
       expect(find.byKey(const Key('pairing_paste_field')), findsNothing);
     });
 
-    testWidgets('Choose app asks for text/plain apps, then sends the exact original text to the picked app only', (t) async {
+    testWidgets('the installed apps are right on the share screen: one tap sends the exact original text to that app only', (t) async {
       await pump(t, _Source(_facebook));
-      await t.tap(find.byKey(const Key('incoming_choose_app')));
-      await t.pumpAndSettle();
       expect(targets.requestedMime, ['text/plain']);
-      expect(find.byKey(const Key('picker_more_apps')), findsOneWidget); // system Sharesheet stays available
-      expect(find.byKey(const Key('picker_discard')), findsNothing); // nothing to discard for text
+      expect(find.byKey(const Key('target_com.fb.orca/.Send')), findsOneWidget); // no extra "Choose app" step, no sheet
+      expect(find.byKey(const Key('incoming_more_apps')), findsOneWidget); // system Sharesheet stays available
+      expect(find.text('Choose app'), findsNothing);
       await t.tap(find.byKey(const Key('target_com.fb.orca/.Send')));
       await t.pumpAndSettle();
       expect(sharer.targetCalls, [(_facebook, 'com.fb.orca/.Send')]);
@@ -218,37 +228,30 @@ void main() {
 
     testWidgets('More apps opens the Android Sharesheet with the same text', (t) async {
       await pump(t, _Source(_facebook));
-      await t.tap(find.byKey(const Key('incoming_choose_app')));
-      await t.pumpAndSettle();
-      await t.tap(find.byKey(const Key('picker_more_apps')));
+      await t.tap(find.byKey(const Key('incoming_more_apps')));
       await t.pumpAndSettle();
       expect(sharer.sheetCalls, [_facebook]);
       expect(sharer.targetCalls, isEmpty);
     });
 
-    testWidgets('dismissing the picker keeps the text: nothing is lost and nothing loops', (t) async {
-      await pump(t, _Source(_facebook));
-      for (var i = 0; i < 2; i++) {
-        await t.tap(find.byKey(const Key('incoming_choose_app')));
-        await t.pumpAndSettle();
-        await t.tapAt(const Offset(10, 10)); // tap outside the sheet
-        await t.pumpAndSettle();
-        expect(find.byKey(const Key('incoming_title')), findsOneWidget);
-        expect(t.widget<Text>(find.byKey(const Key('incoming_text'))).data, _facebook);
-      }
-      expect(sharer.targetCalls, isEmpty);
-      expect(sharer.sheetCalls, isEmpty);
-    });
-
-    testWidgets('an app that vanished keeps the text and reopens the picker; a platform error keeps the text', (t) async {
-      await pump(t, _Source(_facebook));
-      sharer.targetResult = TargetShareResult.targetUnavailable;
-      await t.tap(find.byKey(const Key('incoming_choose_app')));
-      await t.pumpAndSettle();
+    testWidgets('recently used apps come first, and a successful send is remembered', (t) async {
+      final recents = _Recents(['com.whatsapp/.Send']);
+      await pump(t, _Source(_facebook), recents: recents);
+      final whatsapp = t.getTopLeft(find.byKey(const Key('target_com.whatsapp/.Send')));
+      final messenger = t.getTopLeft(find.byKey(const Key('target_com.fb.orca/.Send')));
+      expect(whatsapp.dx < messenger.dx && whatsapp.dy == messenger.dy, isTrue); // WhatsApp first
       await t.tap(find.byKey(const Key('target_com.fb.orca/.Send')));
       await t.pumpAndSettle();
-      expect(find.byKey(const Key('picker_more_apps')), findsOneWidget); // reopened
-      expect(targets.requestedMime.length, 2);
+      expect(recents.ids, ['com.fb.orca/.Send', 'com.whatsapp/.Send']);
+    });
+
+    testWidgets('an app that vanished keeps the text and refreshes the list; a platform error keeps the text', (t) async {
+      await pump(t, _Source(_facebook));
+      sharer.targetResult = TargetShareResult.targetUnavailable;
+      await t.tap(find.byKey(const Key('target_com.fb.orca/.Send')));
+      await t.pumpAndSettle();
+      expect(targets.requestedMime.length, 2); // fresh list
+      expect(find.byKey(const Key('incoming_title')), findsOneWidget);
       sharer.targetResult = TargetShareResult.platformError;
       await t.tap(find.byKey(const Key('target_com.whatsapp/.Send')));
       await t.pumpAndSettle();
@@ -279,6 +282,15 @@ void main() {
       await pump(t, _Source());
       expect(find.byKey(const Key('unpaired_message')), findsOneWidget);
       expect(find.byKey(const Key('incoming_title')), findsNothing);
+    });
+  });
+}
+
+void orderTests() {
+  group('orderByRecents', () {
+    test('recents first in recency order, only installed ones, the rest keep their order', () {
+      final ordered = orderByRecents(['a', 'b', 'c', 'd'], ['d', 'gone', 'b'], (e) => e);
+      expect(ordered, ['d', 'b', 'a', 'c']);
     });
   });
 }

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../handoff/handoff_controller.dart';
 import '../identity/device_identity.dart';
 import '../platform/incoming_share.dart';
+import '../platform/recent_targets.dart';
 import '../platform/share_bridge.dart';
 import '../platform/share_targets.dart';
 import '../security/desktop_trust_store.dart';
@@ -30,6 +31,7 @@ class HomeScreen extends StatefulWidget {
     this.scannerBuilder = _defaultScanner,
     this.incomingShares = const NoIncomingShares(),
     this.textSharer,
+    this.recentTargets = const NoRecentTargets(),
   });
 
   static Widget _defaultScanner(BuildContext context) => const QrScanScreen();
@@ -40,6 +42,7 @@ class HomeScreen extends StatefulWidget {
   /// Text other apps share to FriendSend (Android Share button), and how to hand it on to a chosen app.
   final IncomingShareSource incomingShares;
   final TextSharer? textSharer;
+  final RecentTargetsStore recentTargets;
 
   final DeviceIdentity identity;
   final SecurePairingManager pairingManager;
@@ -57,16 +60,16 @@ class _HomeScreenState extends State<HomeScreen> {
   TrustedDesktop? _desktop;
   String? _incomingText;
   StreamSubscription<String>? _incomingSub;
-  bool _textPickerOpen = false;
+  Future<List<ShareTarget>> _incomingTargets = Future.value(const <ShareTarget>[]);
 
   @override
   void initState() {
     super.initState();
     widget.incomingShares.takeInitial().then((text) {
-      if (text != null && mounted) setState(() => _incomingText = text);
+      if (text != null && mounted) _showIncoming(text);
     });
     _incomingSub = widget.incomingShares.updates.listen((text) {
-      if (mounted) setState(() => _incomingText = text); // the newest share replaces an older unfinished one
+      if (mounted) _showIncoming(text);
     });
     _sub = widget.controller.snapshots.listen(_onState);
     _loadDesktop();
@@ -165,51 +168,51 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _showTextPicker() async {
+  /// Apps that can take the shared text, most recently used first (platform order otherwise).
+  Future<List<ShareTarget>> _loadTextTargets() async {
+    final found = await widget.targetProvider.targetsFor('text/plain');
+    return orderByRecents(found, await widget.recentTargets.load(), (t) => t.id);
+  }
+
+  void _showIncoming(String text) {
+    setState(() {
+      _incomingText = text; // the newest share replaces an older unfinished one
+      _incomingTargets = _loadTextTargets();
+    });
+  }
+
+  Future<void> _pickTextTarget(ShareTarget target) async {
     final text = _incomingText;
     final sharer = widget.textSharer;
-    if (text == null || _textPickerOpen) return;
-    _textPickerOpen = true;
-    final targetsFuture = widget.targetProvider.targetsFor('text/plain');
-    final preview = text.replaceAll(RegExp(r'\s+'), ' ').trim();
-    final result = await showModalBottomSheet<PickerResult>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: context.fs.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => FutureBuilder<List<ShareTarget>>(
-        future: targetsFuture,
-        builder: (_, snap) => TargetPickerSheet(
-          fileName: preview,
-          sizeBytes: null,
-          mimeType: 'text/plain',
-          targets: snap.data ?? const [],
-          loading: snap.connectionState != ConnectionState.done,
-          allowDiscard: false,
-        ),
-      ),
-    );
-    _textPickerOpen = false;
-    if (!mounted || sharer == null || result == null) return; // dismissed: the text stays here, nothing is lost
-    if (result.action == PickerAction.target) {
-      final outcome = await sharer.shareTextToTarget(text: text, targetId: result.target!.id);
+    if (text == null || sharer == null) return;
+    final outcome = await sharer.shareTextToTarget(text: text, targetId: target.id);
+    if (!mounted) return;
+    if (outcome == TargetShareResult.opened) {
+      await widget.recentTargets.record(target.id);
       if (!mounted) return;
-      if (outcome == TargetShareResult.opened) {
-        setState(() => _incomingText = null);
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(outcome == TargetShareResult.targetUnavailable ? '${result.target!.label} isn’t available any more. Pick another app.' : 'Couldn’t open ${result.target!.label}.'),
-      ));
-      if (outcome == TargetShareResult.targetUnavailable) await _showTextPicker();
-    } else if (result.action == PickerAction.systemSheet) {
-      final outcome = await sharer.shareText(text);
-      if (!mounted) return;
-      if (outcome == ShareResult.opened) {
-        setState(() => _incomingText = null);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Couldn’t open the Android Sharesheet.')));
-      }
+      setState(() => _incomingText = null);
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(outcome == TargetShareResult.targetUnavailable ? '${target.label} isn’t available any more. Pick another app.' : 'Couldn’t open ${target.label}.'),
+    ));
+    if (outcome == TargetShareResult.targetUnavailable) {
+      setState(() {
+        _incomingTargets = _loadTextTargets(); // fresh list
+      });
+    }
+  }
+
+  Future<void> _textSystemSheet() async {
+    final text = _incomingText;
+    final sharer = widget.textSharer;
+    if (text == null || sharer == null) return;
+    final outcome = await sharer.shareText(text);
+    if (!mounted) return;
+    if (outcome == ShareResult.opened) {
+      setState(() => _incomingText = null);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Couldn’t open the Android Sharesheet.')));
     }
   }
 
@@ -288,7 +291,13 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final incoming = _incomingText;
     if (incoming != null) {
-      return IncomingShareScreen(text: incoming, onChooseApp: _showTextPicker, onClose: () => setState(() => _incomingText = null));
+      return IncomingShareScreen(
+        text: incoming,
+        targets: _incomingTargets,
+        onPick: _pickTextTarget,
+        onMoreApps: _textSystemSheet,
+        onClose: () => setState(() => _incomingText = null),
+      );
     }
     return StreamBuilder<HandoffUiSnapshot>(
       stream: widget.controller.snapshots,

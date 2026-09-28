@@ -30,6 +30,7 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
             <!-- Share router v1: FriendSend appears in other apps' Share sheet for plain text (links). -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND"/>

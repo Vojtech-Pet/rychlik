@@ -35,3 +35,14 @@ Facebook / Chrome / any app -> Android Share -> FriendSend -> Choose app -> Mess
 6. Picking the real Messages app opens its share flow ("Select recipients") via targeted ACTION_SEND (`fs_messages.png`). Whether the text is visible there was not inspected.
 
 Not verified: the real Facebook app on a physical phone (the requested acceptance path), Messenger/WhatsApp specifically, `image/*`/`video/*`/`ACTION_SEND_MULTIPLE` (later versions), and the "before" state (an older APK without the filter was not kept, so no before/after pair from this run).
+
+
+## v1.1 (after the first physical S24 run)
+
+The S24 run (screenshots from the user) showed two real problems: too many windows (Share -> FriendSend -> "Share link" -> Choose app -> picker -> app) and a picker that listed only the first 12 apps alphabetically (AiData, AiDownload, AliHelper, ...), so Messenger/WhatsApp never appeared. Fixed:
+
+- The installed apps are shown **directly on the Share link screen** (no "Choose app" button, no sheet): Share -> FriendSend -> tap the app. "More apps…" (Android Sharesheet, FriendSend excluded) and Close remain.
+- Ordering: apps Android itself categorises as social (`ApplicationInfo.CATEGORY_SOCIAL`, API 26+; no name list) first, then the rest alphabetically; limit raised to 24; the ones the user sent to last come first (`recent_share_targets.json`, best effort).
+- FriendSend publishes a long-lived sharing shortcut (`share-target` for `text/plain`) so the system Sharesheet can offer it in its top row too. Position and visibility there are decided by Android/One UI ranking; not guaranteed and not yet seen on the S24.
+- Emulator re-check (`artifacts/incoming_share/inline_share.png`): one tap on an app delivers the exact string (`SINK_TEXT ... length=54`); the shortcut exists in `dumpsys shortcut`. Tests: Flutter 119 passed, Kotlin 18 passed.
+- Not verified: the new APK on the S24 (whether Messenger/WhatsApp now appear first, and whether FriendSend moves up in Facebook's Sharesheet).

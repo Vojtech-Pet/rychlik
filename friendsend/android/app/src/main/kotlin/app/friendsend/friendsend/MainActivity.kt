@@ -46,12 +46,29 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         captureIncomingShare(intent)
+        publishShareShortcut()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         if (captureIncomingShare(intent)) incomingChannel?.invokeMethod("incomingAvailable", null) // Dart then pulls it once
+    }
+
+    /** A long-lived sharing shortcut so the system Sharesheet can offer FriendSend in its top (direct share) row. */
+    private fun publishShareShortcut() {
+        try {
+            val shortcut = androidx.core.content.pm.ShortcutInfoCompat.Builder(this, "friendsend_text_share")
+                .setShortLabel("FriendSend")
+                .setLongLived(true)
+                .setIcon(androidx.core.graphics.drawable.IconCompat.createWithResource(this, R.mipmap.ic_launcher))
+                .setIntent(Intent(this, MainActivity::class.java).setAction(Intent.ACTION_VIEW))
+                .setCategories(setOf("app.friendsend.category.TEXT_SHARE"))
+                .build()
+            androidx.core.content.pm.ShortcutManagerCompat.pushDynamicShortcut(this, shortcut)
+        } catch (_: Exception) {
+            // Best effort: FriendSend is still listed among all apps without it.
+        }
     }
 
     private fun captureIncomingShare(source: Intent?): Boolean {

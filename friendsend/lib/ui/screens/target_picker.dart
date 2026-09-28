@@ -53,7 +53,10 @@ class TargetPickerSheet extends StatelessWidget {
               child: Text(mimeType == 'text/plain' ? 'No apps were found. Use the Android Sharesheet below.' : 'No apps were found for this file. Use the Android Sharesheet below.', key: const Key('picker_no_targets'), style: FsText.muted(context)),
             )
           else
-            _Grid(targets: targets),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.5),
+              child: SingleChildScrollView(child: ShareTargetGrid(targets: targets, onSelected: (t) => Navigator.of(context).pop(PickerResult.target(t)))),
+            ),
           const SizedBox(height: FsSpace.s8),
           Material(
             color: p.surface2,
@@ -83,10 +86,12 @@ class TargetPickerSheet extends StatelessWidget {
   }
 }
 
-class _Grid extends StatelessWidget {
-  const _Grid({required this.targets});
+/// The tiles of installed apps. Shared by the picker sheet and the incoming-share screen.
+class ShareTargetGrid extends StatelessWidget {
+  const ShareTargetGrid({super.key, required this.targets, required this.onSelected});
 
   final List<ShareTarget> targets;
+  final void Function(ShareTarget) onSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -101,7 +106,7 @@ class _Grid extends StatelessWidget {
             child: InkWell(
               key: Key('target_${t.id}'),
               borderRadius: BorderRadius.circular(FsRadius.medium),
-              onTap: () => Navigator.of(context).pop(PickerResult.target(t)),
+              onTap: () => onSelected(t),
               child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                 _TargetIcon(target: t),
                 const SizedBox(height: FsSpace.s6),
