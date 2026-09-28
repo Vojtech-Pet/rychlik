@@ -110,24 +110,10 @@
   }
 
   function styleButton() {
+    // Look comes from content.css (the app's design); only the position is set here.
     Object.assign(button.style, {
-      all: "initial",
-      position: "fixed",
-      zIndex: "2147483647",
       top: `${lastAnchor.top}px`,
-      right: `${lastAnchor.right}px`,
-      display: "block",
-      visibility: "visible",
-      opacity: "1",
-      minWidth: "122px",
-      padding: "4px 7px",
-      border: "1px solid #c8d1df",
-      borderRadius: "6px",
-      background: "#ffffff",
-      color: "#172033",
-      boxShadow: "0 4px 14px rgba(15,23,42,.25)",
-      font: "700 11px system-ui, sans-serif",
-      cursor: "pointer"
+      right: `${lastAnchor.right}px`
     });
   }
 
@@ -178,7 +164,7 @@
       button.style.right = `${lastAnchor.right}px`;
     }
     if (panel) {
-      panel.style.top = `${lastAnchor.top + 25}px`;
+      panel.style.top = `${lastAnchor.top + 44}px`;
       panel.style.right = `${lastAnchor.right}px`;
     }
   }
@@ -363,7 +349,7 @@
     panel = document.createElement("div");
     panel.id = "rychlik-quality-panel";
     updateAnchor();
-    panel.style.top = `${lastAnchor.top + 25}px`;
+    panel.style.top = `${lastAnchor.top + 44}px`;
     panel.style.right = `${lastAnchor.right}px`;
     setPanelTitle("Rýchlik video");
     const status = document.createElement("div");
