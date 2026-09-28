@@ -11,11 +11,13 @@ import threading
 
 from rychlik.acquisition.contracts import CompletedDownload, DownloadRequest, ResumeRequest
 from rychlik.acquisition.direct_http import DirectHttpAcquisition, ProgressCallback
+from rychlik.acquisition.media_ytdlp import MediaAcquisition
 
 
 class AcquisitionService:
-    def __init__(self, *, http_backend: DirectHttpAcquisition | None = None) -> None:
+    def __init__(self, *, http_backend: DirectHttpAcquisition | None = None, media_backend: MediaAcquisition | None = None) -> None:
         self._http_backend = http_backend or DirectHttpAcquisition()
+        self._media_backend = media_backend or MediaAcquisition()
 
     def acquire(
         self,
@@ -26,11 +28,10 @@ class AcquisitionService:
         pause_event: threading.Event | None = None,
         resume: ResumeRequest | None = None,
     ) -> CompletedDownload:
-        # Only one backend exists in this phase (Prompt 04.5). Backend selection
-        # by URL scheme/site (yt-dlp, etc.) is deferred. `pause_event`/`resume`
-        # are Prompt A9 additions, both optional/None by default -- a thin
-        # passthrough to the backend, this dispatcher owns no resume logic.
-        return self._http_backend.acquire(
+        # A request carrying MediaOptions goes to the yt-dlp media backend; everything else is a plain
+        # HTTP file. `pause_event`/`resume` are optional passthroughs; this dispatcher owns no resume logic.
+        backend = self._media_backend if request.media is not None else self._http_backend
+        return backend.acquire(
             request,
             progress_callback=progress_callback,
             cancel_event=cancel_event,

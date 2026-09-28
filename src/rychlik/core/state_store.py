@@ -24,6 +24,7 @@ database.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import stat
@@ -39,7 +40,7 @@ from rychlik.core.download_queue import QueueEntry, QueueEntryState, QueuePriori
 from rychlik.core.download_task import DownloadTask, DownloadTaskFailure, DownloadTaskState, restore_task
 from rychlik.core.partial_transfer import PartialTransferState, ValidatorKind
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA_VERSION_KEY = "schema_version"
 _CLEAN_SHUTDOWN_KEY = "clean_shutdown"
@@ -239,10 +240,13 @@ class SqliteDownloadStateStore:
                     task_id TEXT PRIMARY KEY REFERENCES download_tasks(task_id),
                     url TEXT NOT NULL,
                     destination_dir TEXT NOT NULL,
-                    filename_hint TEXT
+                    filename_hint TEXT,
+                    media_json TEXT
                 )
                 """
             )
+            if "media_json" not in {r["name"] for r in conn.execute("PRAGMA table_info(download_requests)")}:
+                conn.execute("ALTER TABLE download_requests ADD COLUMN media_json TEXT")  # schema 4: media (yt-dlp) options
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS queue_entries (
@@ -456,14 +460,15 @@ class SqliteDownloadStateStore:
     def _upsert_request(self, task_id: str, request: DownloadRequest) -> None:
         self._conn.execute(
             """
-            INSERT INTO download_requests (task_id, url, destination_dir, filename_hint)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO download_requests (task_id, url, destination_dir, filename_hint, media_json)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 url = excluded.url,
                 destination_dir = excluded.destination_dir,
-                filename_hint = excluded.filename_hint
+                filename_hint = excluded.filename_hint,
+                media_json = excluded.media_json
             """,
-            (task_id, request.url, str(request.destination_dir), request.filename_hint),
+            (task_id, request.url, str(request.destination_dir), request.filename_hint, _media_to_json(request.media)),
         )
 
     def _upsert_queue_entry(self, entry: QueueEntry) -> None:
@@ -687,6 +692,7 @@ class SqliteDownloadStateStore:
                 url=row["url"],
                 destination_dir=Path(row["destination_dir"]),
                 filename_hint=row["filename_hint"],
+                media=_media_from_json(row["media_json"]),
             )
 
         queue_entries: dict[str, QueueEntry] = {}
@@ -779,3 +785,26 @@ class SqliteDownloadStateStore:
             partial_transfers=partial_transfers,
             completed_files=completed_files,
         )
+
+
+def _media_to_json(media) -> str | None:
+    if media is None:
+        return None
+    return json.dumps(
+        {"video_format": media.video_format, "referer": media.referer, "rate_limit_bytes_per_second": media.rate_limit_bytes_per_second},
+        sort_keys=True,
+    )
+
+
+def _media_from_json(text: str | None):
+    if text is None:
+        return None
+    from rychlik.acquisition.contracts import MediaOptions
+
+    try:
+        data = json.loads(text)
+        return MediaOptions(
+            video_format=data["video_format"], referer=data.get("referer"), rate_limit_bytes_per_second=data.get("rate_limit_bytes_per_second")
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        raise PersistentStateCorruptionError(f"unreadable media options: {exc}") from exc

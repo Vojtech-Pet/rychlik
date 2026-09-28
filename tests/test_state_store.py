@@ -571,3 +571,39 @@ def test_module_has_no_forbidden_imports():
             imported.add(node.module)
     top_level = {name.split(".")[0] for name in imported}
     assert top_level & forbidden == set()
+
+
+
+def test_media_request_round_trip_survives_restart(tmp_path):
+    from rychlik.acquisition.contracts import MediaOptions
+
+    store = _store(tmp_path)
+    request = DownloadRequest(url="https://site.example/v/1", destination_dir=Path("/tmp/x"), filename_hint="v.mp4",
+                              media=MediaOptions(video_format="best", referer="https://site.example/", rate_limit_bytes_per_second=500_000))
+    store.checkpoint_task_state(task=create_task("M", now=T0), request=request)
+    store.close()
+    reopened = SqliteDownloadStateStore(tmp_path / "state.db")
+    reopened.initialize()
+    assert reopened.load().requests["M"] == request and reopened.load().requests["M"].media is not None
+
+
+def test_schema3_database_gets_media_column_and_old_requests_stay_plain_http(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "old.db"
+    store = SqliteDownloadStateStore(db_path)
+    store.initialize()
+    store.checkpoint_task_state(task=create_task("A", now=T0), request=DownloadRequest(url="http://x/y.mp4", destination_dir=Path("/tmp/x")))
+    store.close()
+    conn = sqlite3.connect(db_path)
+    conn.execute("ALTER TABLE download_requests DROP COLUMN media_json")  # exactly the schema-3 shape
+    conn.execute("UPDATE metadata SET value = '3' WHERE key = 'schema_version'")
+    conn.commit()
+    conn.close()
+    migrated = SqliteDownloadStateStore(db_path)
+    migrated.initialize()
+    assert migrated.load().requests["A"].media is None
+    conn = sqlite3.connect(db_path)
+    assert "media_json" in {r[1] for r in conn.execute("PRAGMA table_info(download_requests)")}
+    assert conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[0] == "4"
+    conn.close()

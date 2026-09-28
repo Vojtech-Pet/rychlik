@@ -32,10 +32,27 @@ class DownloadPaused(AcquisitionError):
 
 
 @dataclass(frozen=True)
+class MediaOptions:
+    """Typed options for a media (yt-dlp) acquisition: a page/stream URL rather than a plain file URL.
+    Presence of these options on a DownloadRequest is what selects the media backend."""
+
+    video_format: str = "bestvideo+bestaudio/best"
+    referer: str | None = None
+    rate_limit_bytes_per_second: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.video_format.strip():
+            raise ValueError("video_format must not be empty")
+        if self.rate_limit_bytes_per_second is not None and self.rate_limit_bytes_per_second <= 0:
+            raise ValueError("rate_limit_bytes_per_second must be positive")
+
+
+@dataclass(frozen=True)
 class DownloadRequest:
     url: str
     destination_dir: Path
     filename_hint: str | None = None
+    media: MediaOptions | None = None
 
     def __post_init__(self) -> None:
         if not self.url:
