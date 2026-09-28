@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         *,
         theme_manager: ThemeManager | None = None,
         devices_page: QWidget | None = None,
+        module_registry=None,
         device_actions: dict | None = None,
     ) -> None:
         super().__init__()
@@ -100,6 +101,7 @@ class MainWindow(QMainWindow):
         self._themes = theme_manager
         self._theme = theme_manager.theme if theme_manager else "dark"
         self._devices_page = devices_page
+        self._module_registry = module_registry
         self._device_actions = device_actions or {}
         self._sidebar_items: dict[str, SidebarItem] = {}
         self._active_key = "status:All"
@@ -341,7 +343,7 @@ class MainWindow(QMainWindow):
     def open_settings(self) -> None:
         from rychlik.gui.dialogs import SettingsDialog
 
-        SettingsDialog(self._themes, self).exec()
+        SettingsDialog(self._themes, self, module_registry=self._module_registry).exec()
 
     def _open_destination(self) -> None:
         self._widget._folder_opener(self._widget.destination_dir)  # noqa: SLF001

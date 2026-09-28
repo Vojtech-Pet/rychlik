@@ -18,6 +18,7 @@ from rychlik.gui.device_mode import DeviceModeController
 from rychlik.gui.dialogs.device_dialogs import DevicesPage, PairDeviceDialog, ShareSelectorDialog
 from rychlik.gui.download_manager_widget import DownloadManagerWidget
 from rychlik.gui.main_window import MainWindow
+from rychlik.modules.registry import ModuleRegistry
 from rychlik.share.share_link_service import ShareLinkService
 from rychlik.gui.theme.manager import ThemeManager
 
@@ -45,7 +46,7 @@ def main() -> int:
     )
     devices_page = DevicesPage(devices)
     window = MainWindow(
-        manager, widget, theme_manager=themes, devices_page=devices_page,
+        manager, widget, theme_manager=themes, devices_page=devices_page, module_registry=ModuleRegistry(),
         device_actions={"pair": lambda: PairDeviceDialog(devices, window).exec()},
     )
     app.aboutToQuit.connect(devices.stop)

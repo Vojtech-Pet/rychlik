@@ -8,9 +8,10 @@ from rychlik.gui.theme.manager import PREFERENCE_DARK, PREFERENCE_LIGHT, PREFERE
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, theme_manager: ThemeManager | None, parent=None) -> None:
+    def __init__(self, theme_manager: ThemeManager | None, parent=None, *, module_registry=None) -> None:
         super().__init__(parent)
         self._themes = theme_manager
+        self._module_registry = module_registry
         self.setWindowTitle("Settings")
         self.setModal(True)
         self.setMinimumWidth(460)
@@ -37,6 +38,19 @@ class SettingsDialog(QDialog):
         note.setProperty("role", "caption")
         layout.addSpacing(6)
         layout.addWidget(note)
+        self.modules_button = None
+        if module_registry is not None:
+            layout.addSpacing(14)
+            modules_title = QLabel("Modules")
+            modules_title.setProperty("role", "dialogTitle")
+            layout.addWidget(modules_title)
+            modules_row = QHBoxLayout()
+            modules_row.addWidget(QLabel("Add or remove website modules"))
+            modules_row.addStretch(1)
+            self.modules_button = QPushButton("Manage modules…")
+            self.modules_button.clicked.connect(self.open_modules)
+            modules_row.addWidget(self.modules_button)
+            layout.addLayout(modules_row)
         layout.addSpacing(14)
         close = QHBoxLayout()
         close.addStretch(1)
@@ -46,6 +60,11 @@ class SettingsDialog(QDialog):
         close.addWidget(self.close_button)
         layout.addLayout(close)
         self._sync()
+
+    def open_modules(self) -> None:
+        from rychlik.gui.dialogs.modules import ModulesDialog
+
+        ModulesDialog(self._module_registry, self).exec()
 
     def _choose(self, preference: str) -> None:
         if self._themes is not None:
