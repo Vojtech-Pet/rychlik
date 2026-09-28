@@ -28,7 +28,7 @@ still get the URL first. `/formats` returns the quality list (Najlepšia kvalita
 ## Setup
 
 1. Rýchlik → Settings → Browser extension → Copy token.
-2. Load `browser-extension/` in Firefox (about:debugging → Load Temporary Add-on → `manifest.json`), open the extension popup, paste the token, Save.
+2. Install `dist/rychlik-2.0.0.xpi` (see below) or load `browser-extension/manifest.json` via about:debugging → Load Temporary Add-on, open the extension popup, paste the token, Save.
 
 ## Evidence
 
@@ -41,3 +41,10 @@ still get the URL first. `/formats` returns the quality list (Najlepšia kvalita
 Not verified: the extension loaded in a real Firefox/Chrome (only Node with a mocked browser API), the floating button and quality
 panel on real sites, Chrome (the manifest is Firefox-style `background.scripts`, unchanged from the old extension), and the old app
 running at the same time (it also listens on 17654; the second one to start reports the port as taken in Settings).
+
+## Firefox package
+
+`npx web-ext build --source-dir browser-extension --artifacts-dir dist --filename rychlik-2.0.0.zip` (copied to `rychlik-2.0.0.xpi`); `web-ext lint`: 0 errors, 0 warnings.
+Version 2.0.0 (the token makes it incompatible with the old app's open bridge). The package is **unsigned**, like the earlier `.xpi` files in `rychlik-downloader/web-ext-artifacts`:
+Firefox release refuses unsigned add-ons; install it in Firefox Developer Edition / Nightly / ESR with `xpinstall.signatures.required = false`, or load it temporarily
+from `about:debugging`. A permanently installable build for regular Firefox needs signing on addons.mozilla.org (unlisted), which needs an account and API keys.
