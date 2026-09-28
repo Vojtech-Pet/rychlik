@@ -268,3 +268,25 @@ def test_devices_page_row_trash_button_forgets_only_that_device_after_confirmati
     monkeypatch.setattr(DD, "confirm_forget", lambda row, parent=None: True)
     page.list.itemWidget(page.list.item(0)).forget_button.click()
     assert store.get(target) is None and page.list.count() == 1
+
+
+def test_qr_module_size_decodes_payloads_that_a_smaller_size_could_not():
+    """Root cause of the intermittent QR test failure: at 3 px/module about 2% of real pairing payloads did not decode.
+    These three real payloads failed at 3 px and must decode at the size the dialog actually uses."""
+    import json
+
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+    from PySide6.QtGui import QImage
+
+    from rychlik.gui.qr_image import qr_image
+
+    def decodes(text, scale):
+        image = qr_image(text, scale=scale).convertToFormat(QImage.Format.Format_Grayscale8)
+        arr = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(image.height(), image.bytesPerLine())[:, : image.width()].copy()
+        return cv2.QRCodeDetectorAruco().detectAndDecode(arr)[0] == text
+
+    payloads = json.loads((Path(__file__).parent / "fixtures" / "qr_hard_payloads.json").read_text("utf-8"))
+    assert len(payloads) == 3
+    assert not any(decodes(p, 3) for p in payloads)  # documents the failure: 3 px/module is too small
+    assert all(decodes(p, DD.QR_MODULE_PIXELS) for p in payloads)

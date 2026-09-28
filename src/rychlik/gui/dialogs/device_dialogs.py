@@ -34,6 +34,7 @@ STATE_TONE = {
     DeviceState.IDENTITY_CHANGED: "error",
     DeviceState.UNPAIRED_DISCOVERED: "info",
 }
+QR_MODULE_PIXELS = 4  # 3 px/module failed to decode for ~2% of real pairing payloads in tests
 STEPS = ("Prepare", "Send", "Verified")
 _TERMINAL = (HandoffState.RECEIVED, HandoffState.FAILED, HandoffState.CANCELLED)
 
@@ -421,7 +422,7 @@ class PairDeviceDialog(QDialog):
             return
         self.code_box.setText(self._session.code_text)
         self.code_box.setCursorPosition(0)
-        self.qr_label.setPixmap(QPixmap.fromImage(qr_image(self._session.code_text, scale=3)))
+        self.qr_label.setPixmap(QPixmap.fromImage(qr_image(self._session.code_text, scale=QR_MODULE_PIXELS)))
         self.copy_button.setEnabled(True)
         self.status_label.setText("Waiting for the phone…")
         self.tick()
