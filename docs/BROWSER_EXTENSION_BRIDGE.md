@@ -28,7 +28,7 @@ still get the URL first. `/formats` returns the quality list (Najlepšia kvalita
 ## Setup
 
 1. Rýchlik → Settings → Browser extension → Copy token.
-2. Install `dist/rychlik-desktop-app-2.0.1.xpi` (see below) or load `browser-extension/manifest.json` via about:debugging → Load Temporary Add-on, open the extension popup, paste the token, Save.
+2. Install `dist/rychlik-desktop-app-2.0.1.1.xpi` (see below) or load `browser-extension/manifest.json` via about:debugging → Load Temporary Add-on, open the extension popup, paste the token, Save.
 
 ## Evidence
 
@@ -43,7 +43,7 @@ panel on real sites, Chrome (the manifest is Firefox-style `background.scripts`,
 
 ## Firefox package
 
-`npx web-ext build --source-dir browser-extension --artifacts-dir dist --filename rychlik-desktop-app-2.0.1.zip` (copied to `rychlik-desktop-app-2.0.1.xpi`); `web-ext lint`: 0 errors, 0 warnings.
+`npx web-ext build --source-dir browser-extension --artifacts-dir dist --filename rychlik-desktop-app-2.0.1.1.zip` (copied to `rychlik-desktop-app-2.0.1.1.xpi`); `web-ext lint`: 0 errors, 0 warnings.
 Version 2.0.1 (2.0.0 shared the old app's port 17654 and connected to it when the old app was running; the token makes it incompatible with the old app's open bridge). The package is **unsigned**, like the earlier `.xpi` files in `rychlik-downloader/web-ext-artifacts`:
 Firefox release refuses unsigned add-ons; install it in Firefox Developer Edition / Nightly / ESR with `xpinstall.signatures.required = false`, or load it temporarily
 from `about:debugging`. A permanently installable build for regular Firefox needs signing on addons.mozilla.org (unlisted), which needs an account and API keys.
