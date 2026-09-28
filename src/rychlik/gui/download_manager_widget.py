@@ -707,18 +707,18 @@ class DownloadManagerWidget(QWidget):
         self._destination_dir = path
         return path
 
-    def submit_download(self, url: str, destination_dir: Path | None = None) -> bool:
+    def submit_download(self, url: str, destination_dir: Path | None = None, media=None) -> bool:
         """Adds one download. Returns True only after the service accepted it.
         A bounded re-entrancy guard (not a global lock) keeps a double submit from adding twice."""
         if self._add_in_progress:
             return False
         self._add_in_progress = True
         try:
-            return self._submit_download_impl(url, destination_dir)
+            return self._submit_download_impl(url, destination_dir, media)
         finally:
             self._add_in_progress = False
 
-    def _submit_download_impl(self, url: str, destination_dir: Path | None) -> bool:
+    def _submit_download_impl(self, url: str, destination_dir: Path | None, media=None) -> bool:
         url = url.strip()
         if not url:
             QMessageBox.warning(self, "Rýchlik", "Enter a URL first.")
@@ -728,7 +728,7 @@ class DownloadManagerWidget(QWidget):
             QMessageBox.warning(self, "Rýchlik", f"Destination is not a valid directory:\n{destination}")
             return False
         try:
-            request = DownloadRequest(url=url, destination_dir=destination)
+            request = DownloadRequest(url=url, destination_dir=destination, media=media)
         except ValueError as exc:
             QMessageBox.warning(self, "Rýchlik", f"Invalid download request:\n{exc}")
             return False
@@ -743,12 +743,12 @@ class DownloadManagerWidget(QWidget):
 
     # --- add download through site modules ---------------------------------------------------------------------
 
-    def submit_download_async(self, url: str, destination_dir: Path | None, on_done):
+    def submit_download_async(self, url: str, destination_dir: Path | None, on_done, media=None):
         """Add-download entry point used by the dialog. `on_done(ok, message)` is called on the GUI thread once the download
         was added or refused. With no module service this is exactly the ordinary path, completed synchronously.
         Returns a job (with cancel()) while a module resolves the URL, else None."""
         if self._resolve_service is None:
-            on_done(self.submit_download(url, destination_dir), "")
+            on_done(self.submit_download(url, destination_dir, media), "")
             return None
         url = url.strip()
         if not url:
@@ -761,20 +761,20 @@ class DownloadManagerWidget(QWidget):
             on_done(False, "")
             return None
         job = self._resolve_service.start(
-            url, destination, lambda finished_job, outcome: self._resolve_finished.emit(finished_job, outcome, (url, destination, on_done))
+            url, destination, lambda finished_job, outcome: self._resolve_finished.emit(finished_job, outcome, (url, destination, on_done, media))
         )
         self._resolve_jobs.add(job)
         return job
 
     def _on_resolve_finished(self, job, outcome, context) -> None:
         self._resolve_jobs.discard(job)
-        url, destination, on_done = context
+        url, destination, on_done, media = context
         if job.cancelled or self._shutting_down:
             return  # the user cancelled or the window is closing: nothing is enqueued and no stale callback runs
         from rychlik.modules.resolve_service import ResolveKind
 
         if outcome.kind == ResolveKind.PLAIN:
-            on_done(self.submit_download(url, destination), "")
+            on_done(self.submit_download(url, destination, media), "")
         elif outcome.kind == ResolveKind.RESOLVED:
             try:
                 self._manager.add_download(outcome.request)
@@ -793,10 +793,10 @@ class DownloadManagerWidget(QWidget):
         else:
             on_done(False, "")
 
-    def open_add_dialog(self) -> None:
+    def open_add_dialog(self, url: str = "", media=None) -> None:
         from rychlik.gui.dialogs import AddDownloadDialog
 
-        AddDownloadDialog(self, theme=self._theme).exec()
+        AddDownloadDialog(self, theme=self._theme, url=url, media=media).exec()
 
     # --- completed-file bridge: Open / Open folder / Share / Details --------------------------------------
 

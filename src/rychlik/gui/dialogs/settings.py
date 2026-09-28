@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout
 
 from rychlik.gui.theme.manager import PREFERENCE_DARK, PREFERENCE_LIGHT, PREFERENCE_SYSTEM, ThemeManager
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, theme_manager: ThemeManager | None, parent=None, *, module_registry=None) -> None:
+    def __init__(self, theme_manager: ThemeManager | None, parent=None, *, module_registry=None, browser_bridge=None, bridge_tokens=None) -> None:
         super().__init__(parent)
         self._themes = theme_manager
         self._module_registry = module_registry
+        self._bridge = browser_bridge
+        self._bridge_tokens = bridge_tokens
         self.setWindowTitle("Settings")
         self.setModal(True)
         self.setMinimumWidth(460)
@@ -51,6 +54,35 @@ class SettingsDialog(QDialog):
             self.modules_button.clicked.connect(self.open_modules)
             modules_row.addWidget(self.modules_button)
             layout.addLayout(modules_row)
+        self.token_box = None
+        if bridge_tokens is not None:
+            layout.addSpacing(14)
+            ext_title = QLabel("Browser extension")
+            ext_title.setProperty("role", "dialogTitle")
+            layout.addWidget(ext_title)
+            listening = browser_bridge is not None and browser_bridge.running
+            self.bridge_status = QLabel(
+                f"Listening on 127.0.0.1:{browser_bridge.port}" if listening else "Not available: the port is in use by another program."
+            )
+            self.bridge_status.setProperty("role", "caption")
+            layout.addWidget(self.bridge_status)
+            note = QLabel("Paste this token into the Rýchlik browser extension once. Only the extension can send links to the app.")
+            note.setWordWrap(True)
+            note.setProperty("role", "caption")
+            layout.addWidget(note)
+            token_row = QHBoxLayout()
+            self.token_box = QLineEdit(bridge_tokens.get())
+            self.token_box.setReadOnly(True)
+            self.token_box.setEchoMode(QLineEdit.EchoMode.Password)
+            self.token_box.setAccessibleName("Browser extension token")
+            self.copy_token_button = QPushButton("Copy token")
+            self.new_token_button = QPushButton("New token…")
+            token_row.addWidget(self.token_box, 1)
+            token_row.addWidget(self.copy_token_button)
+            token_row.addWidget(self.new_token_button)
+            layout.addLayout(token_row)
+            self.copy_token_button.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.token_box.text()))
+            self.new_token_button.clicked.connect(self.new_token)
         layout.addSpacing(14)
         close = QHBoxLayout()
         close.addStretch(1)
@@ -60,6 +92,14 @@ class SettingsDialog(QDialog):
         close.addWidget(self.close_button)
         layout.addLayout(close)
         self._sync()
+
+    def new_token(self) -> None:
+        box = QMessageBox(QMessageBox.Icon.Warning, "New token?", "The extension stops working until you paste the new token into it.", QMessageBox.StandardButton.NoButton, self)
+        go = box.addButton("Create new token", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is go and self._bridge_tokens is not None and self.token_box is not None:
+            self.token_box.setText(self._bridge_tokens.regenerate())
 
     def open_modules(self) -> None:
         from rychlik.gui.dialogs.modules import ModulesDialog

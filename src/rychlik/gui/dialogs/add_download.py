@@ -14,9 +14,10 @@ class AddDownloadDialog(QDialog):
     """Calls `widget.submit_download(url, destination)` -- the same single service call the page
     always used -- and closes only after the service accepted the download."""
 
-    def __init__(self, widget, *, theme: str = "dark") -> None:
+    def __init__(self, widget, *, theme: str = "dark", url: str = "", media=None) -> None:
         super().__init__(widget)
         self._widget = widget
+        self._media = media  # MediaOptions when the address came from the browser as a video page
         self._destination: Path = widget.destination_dir
         self.setWindowTitle("Add download")
         self.setModal(True)
@@ -84,6 +85,8 @@ class AddDownloadDialog(QDialog):
         self.browse_button.clicked.connect(self._browse)
         self.cancel_button.clicked.connect(self.reject)
         self.download_button.clicked.connect(self._submit)
+        if url:
+            self.url_input.setText(url)  # e.g. sent by the browser extension; the user still confirms
 
     def _paste(self) -> None:
         from PySide6.QtGui import QGuiApplication
@@ -103,7 +106,7 @@ class AddDownloadDialog(QDialog):
             return
         self.status_label.setText("")
         self._finished = False
-        job = self._widget.submit_download_async(self.url_input.text(), self._destination, self._on_result)
+        job = self._widget.submit_download_async(self.url_input.text(), self._destination, self._on_result, self._media)
         if job is not None and not self._finished:  # a module is resolving the address in the background
             self._job = job
             self._set_busy(True)

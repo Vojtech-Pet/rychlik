@@ -239,7 +239,7 @@ def test_a_late_result_for_a_cancelled_job_or_a_closing_window_is_dropped_by_the
     called = []
     cancelled = ResolveJob()
     cancelled.cancel()
-    rig.widget._on_resolve_finished(cancelled, outcome, ("https://site.example/x", rig.tmp / "dl", lambda ok, msg: called.append(ok)))
+    rig.widget._on_resolve_finished(cancelled, outcome, ("https://site.example/x", rig.tmp / "dl", lambda ok, msg: called.append(ok), None))
     rig.widget._shutting_down = True
-    rig.widget._on_resolve_finished(ResolveJob(), outcome, ("https://site.example/x", rig.tmp / "dl", lambda ok, msg: called.append(ok)))
+    rig.widget._on_resolve_finished(ResolveJob(), outcome, ("https://site.example/x", rig.tmp / "dl", lambda ok, msg: called.append(ok), None))
     assert rig.enqueued() == [] and called == []
