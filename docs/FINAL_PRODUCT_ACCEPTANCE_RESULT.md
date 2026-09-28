@@ -1,7 +1,7 @@
 # Final GUI/UX + Device Mode Acceptance — Result
 
 Baseline `a6a64ed` · acceptance changes committed on top (see "Final head"). Scope: test/acceptance only; only bugs proven by acceptance were fixed.
-**Gate: PARTIAL** — everything that can be proven without a physical Android phone is proven; A14/A15 stay OPEN, A17 stays BLOCKED.
+**Gate: PASS after physical run (2026-09-28, see "Physical Android run")** — emulator run left A14/A15 OPEN and A17 BLOCKED; the physical Samsung S24 run below closes them, with one new finding (stale NSD, `A17-STALE-NSD-ONLINE`).
 
 ## Evidence classes (kept separate on purpose)
 
@@ -80,10 +80,22 @@ Real download → Artifact → Share/Send dialog → A16 preparation (real FFmpe
 
 ## Not verified
 
-Physical Android device (A14 share smoke, A15 physical mDNS, A17 whole gate), real Messenger/WhatsApp, Direct Share behaviour, Wi-Fi network loss, real-device Sharesheet file-name preview, physical A16 transcode-to-Sharesheet.
+Direct Share behaviour, Wi-Fi network loss, physical A16 REMUX path, which real app was picked in Choose app (user did not name it), instrumented (non-manual) read of the shared file by the target app. Physical results below for Choose app / Sharesheet are user-observed, not logged by tooling.
+
+## Physical Android run (Samsung S24, real Wi-Fi 192.168.123.x, no adb forwarding)
+
+Evidence class: **physical**. Desktop side: production `DeviceModeController` with the real app data directory and real zeroconf; the send was driven by a script calling the same controller/service the GUI Send dialog uses (not by clicking the dialog).
+
+1. **Pairing by QR** (new): desktop Pair dialog rendered the payload as a QR code, FriendSend scanned it with the camera, trust established (user-confirmed; trust store holds the device with endpoint 192.168.123.132). QR round-trip is also unit-tested by decoding the rendered image (OpenCV Aruco decoder).
+2. **A15 physical NSD**: the phone appeared as `TRUSTED_ONLINE` at 192.168.123.132 from real mDNS; the endpoint was refreshed from discovery (endpoint metadata only, pin untouched), including after the receiver port changed on app restart.
+3. **Secure send**: `pinned-tls-signature-v1` send of a small MP4 (PASSTHROUGH) → `RECEIVED` (15:22:11); source file unchanged.
+4. **A16 physical transcode**: stages `Checking → Converting video → Connecting → Sending → Received` (15:26:31) → `RECEIVED`.
+5. **A14 / A17-E1 (user-observed)**: Choose app → a real installed target opened the file; More apps… opened the Android Sharesheet whose preview shows **`holiday.mp4`** (the emulator showed the internal `incoming-<uuid>.bin`). Both paths "worked" per the user.
+6. **New finding `A17-STALE-NSD-ONLINE`**: after the user left FriendSend, the phone's receiver port was closed but the desktop still listed the device `TRUSTED_ONLINE` (mDNS record not withdrawn); a send at 15:24:47 failed truthfully with `CONNECTION_FAILED` and no source damage. Re-sending after reopening FriendSend succeeded. Truthfulness of the *Online* label is the open point, not the send.
+7. **Intermittent, not reproduced**: `test_pair_dialog_qr_decodes_to_exact_code` failed once in one full-suite run; 12 isolated runs, 180 random payloads at 3/4/5 px per module and two later full runs (1106 passed) did not fail.
 
 ## Validation debts
 
-`A9-CRASH-RANGE-E2E` CLOSED · `A14-PHYSICAL-ANDROID-SHARE-SMOKE` OPEN · `A15-PHYSICAL-MDNS-DISCOVERY` OPEN · `A17` BLOCKED.
+`A9-CRASH-RANGE-E2E` CLOSED · `A14-PHYSICAL-ANDROID-SHARE-SMOKE` CLOSED (physical, user-observed target/Sharesheet) · `A15-PHYSICAL-MDNS-DISCOVERY` CLOSED · `A17` PASS · new `A17-STALE-NSD-ONLINE` OPEN.
 
 `tools/emulator_driver/` and `tools/emulator_sink/` hold the scripts and test-app sources used for the emulator run (reference; the scripts contain paths of the original session).
