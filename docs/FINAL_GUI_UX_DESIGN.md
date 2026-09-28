@@ -36,6 +36,7 @@ Companion files: `design/final_design_tokens.json`, `design/SCREEN_INVENTORY.md`
 | C5 | v3 tokens lack accent hover/pressed, `border.strong`, focus ring, and text-safe status colors for the light theme | Added; all 50 audited pairs pass (see `CONTRAST_AUDIT.md`). v3 files are unmodified |
 | C6 | `design.txt` allows "Connections" to show segments; the backend downloads over one resumable connection (segmenting is a known A9 limitation) | Connections tab shows one connection with an honest note; more rows only when segmenting exists |
 | C7 | `design.txt` says pairing UI is out of scope; the real app has no desktop pairing UI (`SecurePairingManager` is not wired to the GUI) | Designed (D20-D23); listed as an implementation dependency |
+| C9 | The current functional skeleton exposes Hold, Release, Pause, Resume, Retry now, Cancel, Up, Down, priority and Open Folder, Share; the first design pass dropped most queue controls | Restored (section 4a). Dropping backend capabilities in a redesign would be a functional regression |
 | C8 | The v3 preview leaves most of the window empty and uses very small type | Dense sample data (14-30 rows) and a fixed 12 px body; wide screens gain columns, not larger text |
 
 ## 3. Design hierarchy
@@ -67,6 +68,17 @@ FriendSend: pair (setup, once) > ready > receive > verify > choose app > handoff
 - Details opens in a separate 660 px dialog (Information / Connections / Log); no permanent inspector.
 - The window client area is designed; minimum window 1100 x 640.
 
+## 4a. Queue-control actions (added after the first review)
+
+Source of truth: `DownloadManagerService` (`hold`, `release_hold`, `pause_transfer`, `resume_transfer`, `cancel`, `retry_now`, `set_priority`, `move_before/after`).
+
+- **Hold is not Pause.** Pause stops a running transfer; Hold stops the scheduler from starting an item and never interrupts a running transfer. They have different labels, glyphs (lock vs pause bars) and tooltips. Held is a secondary chip beside the task status.
+- **State-aware menus only.** Retry now appears only for RETRY_WAIT, Resume only for PAUSED, Pause only while TRANSFERRING. FAILED has no retry command, so its menu offers Details, Open folder, Remove, Delete file.
+- **Order and priority.** Priority > High / Normal / Low; Move up / Move down work only within one priority band (the backend refuses cross-band moves), so they disable at a band edge. The Queues view (D26) shows the three bands with positions; bulk selection deliberately has no reorder.
+- **Details** gains Priority, Queue position and Held. **Cancelled** is a real terminal state and now has its own status.
+- Mockups: `desktop/06_completed_context.png`, `06b_context_downloading.png`, `06c_context_retrying.png`, `06d_context_held.png`, `06e_priority_submenu.png`, `06f_context_failed.png`, `15_multi_selection.png`, `17_details_information.png`, `34_queues_view.png`, `35_retry_now_hover.png`.
+- Flow table: `design/UX_FLOWS.md` section 11. Token change: two new status semantics (held, cancelled) and the action glyph map in `final_design_tokens.json`.
+
 ## 5. FriendSend architecture
 
 A state machine with almost no navigation: `PAIRING -> READY -> RECEIVING -> VERIFYING -> RECEIVED -> CHOOSE APP -> HANDOFF`.
@@ -92,7 +104,7 @@ mobile Roboto. Mockups were rendered with Noto Sans (desktop) and Roboto (mobile
 
 Desktop: MenuBar, Toolbar (primary Add + icon/text actions), SidebarItem (active = tint + edge + accent text), TaskTable, TaskRow (42 px),
 ProgressBar (6 px), StatusBadge (icon + text), SearchField, FilterCombo, BulkToolbar (36 px), ContextMenu, Dialog (elevated, 10 px radius),
-DeviceRow, EmptyState (compact), BottomStatusBar. Sheets: `desktop/30_components_dark.png`, `31_components_light.png`.
+DeviceRow, EmptyState (compact), BottomStatusBar, RowActions (hover, state-valid), HeldChip, PriorityMark, QueueBand, Tooltip. Sheets: `desktop/30_components_dark.png`, `31_components_light.png`.
 
 FriendSend: AppHeader (56 dp), StatusHero (orb + title + one sentence), TransferCard, ProgressIndicator (8 dp pill, determinate and indeterminate),
 PrimaryButton / SecondaryButton / TertiaryButton / DestructiveButton (52 dp pill), StepList (verify pipeline), ShareTargetTile (84 x 92 dp),
@@ -116,7 +128,7 @@ Share-target tiles in the mockups use neutral lettered placeholders: real app ic
 
 ## 8. State inventory
 
-Download: Waiting, Downloading, Retrying, Paused, Completed, Failed. Device: Trusted - Online, Trusted - Offline, Pairing, Identity changed,
+Download: Waiting, Downloading, Retrying, Paused, Completed, Failed, Cancelled (plus the Held chip; Resolving/Verifying/Post-processing map to Waiting/Downloading wording). Device: Trusted - Online, Trusted - Offline, Pairing, Identity changed,
 Not paired (discovered). Send: Preparing, Converting, Sending, RECEIVED, Failed, Cancelled. Link: CREATING, ONLINE, OFFLINE, EXPIRED, REVOKED, ERROR.
 FriendSend: Unpaired, Pairing, Paired, Ready, No network, Receiving, Verifying, Preparing to share, Received, Choosing app, Handed off, Cancelled, Failed,
 Integrity failure. Every status pairs a glyph with a text label (status is never color-only).
@@ -170,7 +182,7 @@ with a manual override on desktop (Settings > Appearance). Do not copy desktop Q
 
 ## 14. Mockup index
 
-`design/mockups/00_family_overview.png` shows both apps together. Desktop (35 PNG) and FriendSend (37 PNG, including size variants and component sheets):
+`design/mockups/00_family_overview.png` shows both apps together. Desktop (42 PNG) and FriendSend (37 PNG, including size variants and component sheets):
 listed per screen, with filenames, in `design/SCREEN_INVENTORY.md`. Key files: `desktop/01_main_dark_1366.png`, `02_main_dark_1920.png`, `03_main_dark_2560.png`,
 `04_main_light.png`, `05_add_download.png` ... `12_pair_device.png`; `friendsend/01_pairing.png`, `02_ready.png`, `03_receiving.png`, `04_verifying.png`,
 `05_received.png`, `06_share_target_picker.png`, `07_share_target_picker_dark.png`, `08_transfer_error.png`, `09_trusted_desktop.png`, `10_forget_confirmation.png`.
@@ -191,7 +203,7 @@ Regenerate with `python3 design/prototype/build.py all` (needs a Chromium-based 
 | Errors/security understandable? | Yes: plain sentences, one action, identity change offers Forget only |
 | Generic Qt/Flutter look? | No: custom tokens, radii, badges and icon set, but implementation must not fall back to default widget styles |
 
-Issues found during review and fixed: 14th row overflowing into the status bar, Details dialog height varying by tab, no-contrast accent hover in dark theme,
+Issues found during review and fixed (including a second review round: queue-control actions dropped from the first pass, and Share/Send dialogs naming a still-downloading file instead of the selected completed one): 14th row overflowing into the status bar, Details dialog height varying by tab, no-contrast accent hover in dark theme,
 white text on plain error red, mis-anchored annotation over the FriendSend header, stretched tile grid in the component sheet.
 
 ## 16. Known unresolved visual questions
@@ -216,4 +228,6 @@ white text on plain error red, mis-anchored annotation over the FriendSend heade
 7. **Share by Link extras** (Open in browser, QR, Share via phone) are design placeholders.
 8. **Assets to replace:** the 24 px raster icons in `assets/*.zip` and the v3 QSS pixel/`pt` mix; use tokens and the single stroke icon set.
 9. **Both themes** need centralized tokens (no hardcoded colors). Consume `design/final_design_tokens.json`.
-10. **Nothing in this phase closes A14-PHYSICAL-ANDROID-SHARE-SMOKE or A15-PHYSICAL-MDNS-DISCOVERY.** They remain OPEN.
+10. **Queue actions are existing backend capabilities** (hold, release, pause, resume, cancel, retry now, priority, reorder). Any implementation must keep them reachable; the GUI must disable Move up/down at band edges and show Retry now only for RETRY_WAIT. The backend offers no retry for FAILED items.
+11. **Snapshot data.** Priority, queue position and Held must come from the existing manager snapshot; if a field is not exposed today the row must be omitted rather than guessed.
+12. **Nothing in this phase closes A14-PHYSICAL-ANDROID-SHARE-SMOKE or A15-PHYSICAL-MDNS-DISCOVERY.** They remain OPEN.

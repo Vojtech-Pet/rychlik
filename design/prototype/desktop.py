@@ -116,6 +116,17 @@ CSS = """
 .empty{margin:auto;text-align:center;color:var(--text2);padding-bottom:80px}
 .empty .ring{width:56px;height:56px;border-radius:50%;background:var(--accent-tint);color:var(--accent-text);display:grid;place-items:center;margin:0 auto 12px}
 .empty b{display:block;color:var(--text);font-size:14px;line-height:20px;margin-bottom:4px}
+.acts{display:flex;justify-content:flex-end;gap:2px}
+.ab{width:24px;height:24px;display:grid;place-items:center;border-radius:5px;color:var(--icon)}
+.tr.hover .ab,.tr.sel .ab{background:color-mix(in srgb,var(--text) 9%,transparent)}
+.held{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;margin-left:8px;border-radius:9px;font-size:10.5px;font-weight:600;color:var(--text2);border:1px solid var(--border-strong)}
+.held .ic{width:11px;height:11px}
+.btn.xs{height:22px;padding:0 8px;font-size:11px;border-radius:5px}
+.pri{display:inline-flex;vertical-align:-2px;margin-right:4px}
+.tip{position:absolute;background:var(--text);color:var(--bg);border-radius:6px;padding:6px 9px;font-size:11px;line-height:15px;max-width:250px;box-shadow:var(--sh-pop)}
+.band{display:flex;align-items:center;gap:8px;height:28px;padding:0 12px;background:var(--surface2);color:var(--text2);font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;border-bottom:1px solid var(--border)}
+.band .n{margin-left:auto;font-weight:500;letter-spacing:0;text-transform:none}
+.grip{color:var(--text3)}
 .kbd{display:inline-block;border:1px solid var(--border-strong);border-radius:4px;padding:0 5px;font-size:10.5px;line-height:16px;color:var(--text2)}
 """
 
@@ -126,7 +137,11 @@ STATE = {
     "paused": ("pause", "Paused", "warning", "var(--warning)"),
     "completed": ("check", "Completed", "success", "var(--success)"),
     "failed": ("x", "Failed", "error", "var(--error)"),
+    "cancelled": ("x-circle", "Cancelled", "neutral", "var(--neutral)"),
 }
+# Queue-level attributes (independent of task state): priority band and hold.
+PRIO = {"Fedora-Workstation-Live-x86_64-41.iso": "high", "video.mp4": "high", "backup-2026-09.tar.zst": "low", "movie.mkv": "low"}
+HELD = {"archive.zip"}
 EXT_ICON = {"ISO": "box", "MP4": "video", "MKV": "video", "WEBM": "video", "ZIP": "archive", "ZST": "archive", "XZ": "archive",
             "PDF": "doc", "PPTX": "doc", "FLAC": "music", "MP3": "music", "PNG": "image", "BIN": "box", "APPIMAGE": "box"}
 
@@ -140,6 +155,7 @@ ROWS = [
     ("movie.mkv", "example.org", "MKV", "1.8 GB", 40, "paused", "—", "—", "Video", "Yesterday"),
     ("setup.AppImage", "releases.example.dev", "APPIMAGE", "148 MB", 71, "retrying", "—", "—", "Other", "Yesterday"),
     ("broken.bin", "bad.example", "BIN", "220 MB", 22, "failed", "—", "—", "Other", "Yesterday"),
+    ("old-installer.exe", "download.example.com", "BIN", "76 MB", 12, "cancelled", "—", "—", "Other", "Yesterday"),
     ("ubuntu-24.04.1-desktop-amd64.iso", "releases.ubuntu.com", "ISO", "5.9 GB", 100, "completed", "—", "—", "Other", "Mon"),
     ("document.pdf", "docs.example", "PDF", "12.4 MB", 100, "completed", "—", "—", "Documents", "Mon"),
     ("music.flac", "audio.example", "FLAC", "87.8 MB", 100, "completed", "—", "—", "Music", "Mon"),
@@ -168,9 +184,9 @@ MORE = [
 ]
 
 COLSETS = {
-    "wide": ("check|24px name|minmax(280px,1fr) cat|90px type|56px size|76px prog|190px stat|140px speed|84px eta|70px added|100px act|28px",),
-    "normal": ("check|24px name|minmax(240px,1fr) type|56px size|76px prog|190px stat|140px speed|84px eta|70px act|28px",),
-    "compact": ("check|24px name|minmax(200px,1fr) size|72px prog|150px stat|130px speed|96px act|28px",),
+    "wide": ("check|24px name|minmax(280px,1fr) cat|90px type|56px size|76px prog|190px stat|164px speed|84px eta|70px added|100px act|84px",),
+    "normal": ("check|24px name|minmax(240px,1fr) type|56px size|76px prog|190px stat|164px speed|84px eta|70px act|84px",),
+    "compact": ("check|24px name|minmax(200px,1fr) size|72px prog|150px stat|140px speed|96px act|84px",),
 }
 HEAD = {"check": "", "name": "Name", "cat": "Category", "type": "Type", "size": "Size", "prog": "Progress", "stat": "Status",
         "speed": "Speed", "eta": "Remaining", "added": "Added", "act": ""}
@@ -190,22 +206,57 @@ def state_badge(state):
     return f'<span class="badge c-{cls}">{icon(g, 14)}{label}</span>'
 
 
+def prio_mark(name):
+    p = PRIO.get(name)
+    if p == "high":
+        return f'<span class="pri c-accent" title="High priority">{icon("arrow-up", 11, stroke=2.4)}</span>'
+    if p == "low":
+        return f'<span class="pri t2" title="Low priority">{icon("arrow-down", 11, stroke=2.4)}</span>'
+    return ""
+
+
+def row_actions(state, held, name):
+    ab = lambda ic: f'<span class="ab">{icon(ic, 15)}</span>'
+    more = ab("more")
+    if state == "downloading":
+        return ab("pause") + ab("x-circle") + more
+    if state == "retrying":
+        return ab("refresh") + ab("x-circle") + more
+    if state == "paused":
+        return ab("play") + ab("x-circle") + more
+    if state == "waiting":
+        return ab("unlock" if held else "lock") + ab("x-circle") + more
+    if state == "completed":
+        return ab("folder") + ab("send") + more
+    return more
+
+
 def row(r, keys, sel=False, hover=False, checked=False):
     name, src, ext, size, pct, state, speed, eta, cat, added = r
     ic = icon(EXT_ICON.get(ext, "box"), 16)
     _, _, _, fill = STATE[state]
+    held = name in HELD
+    held_chip = f'<span class="held">{icon("lock", 11)}Held</span>' if held else ""
+    show_acts = hover or (sel and not checked)
+    acts = row_actions(state, held, name) if show_acts else f'<span class="ab" style="opacity:.75">{icon("more", 15)}</span>'
+    if state == "retrying" and "eta" in keys:
+        speed_cell = f'<div class="cell"><span class="btn xs tertiary" style="padding:0 6px;margin-left:-6px">{icon("refresh", 12)}Retry now</span></div>'
+    elif "eta" in keys:
+        speed_cell = f'<div class="cell">{speed}</div>'
+    else:
+        speed_cell = f'<div class="cell">{speed if speed == "—" else speed + " · " + eta}</div>'
     cells = {
         "check": f'<div class="check {"on" if checked else ""}">{icon("check", 11, stroke=3) if checked else ""}</div>',
-        "name": f'<div class="name">{ic}<div class="t"><b>{name}</b><small>{src}</small></div></div>',
+        "name": f'<div class="name">{ic}<div class="t"><b>{name}</b><small>{prio_mark(name)}{src}</small></div></div>',
         "cat": f'<div class="cell t2">{cat}</div>',
         "type": f'<div class="cell t2">{ext if ext != "APPIMAGE" else "BIN"}</div>',
         "size": f'<div class="cell">{size}</div>',
-        "prog": f'<div class="prog"><div class="bar"><i style="width:{pct}%;background:{fill}"></i></div><span class="pct">{pct}%</span></div>' if state != "waiting" else '<div class="prog"><div class="bar"></div><span class="pct">—</span></div>',
-        "stat": f'<div class="cell">{state_badge(state)}</div>',
-        "speed": f'<div class="cell">{speed if "speed" in keys and "eta" in keys or speed == "—" else speed}</div>' if "eta" in keys else f'<div class="cell">{speed if speed == "—" else speed + " · " + eta}</div>',
+        "prog": (f'<div class="prog"><div class="bar"><i style="width:{pct}%;background:{fill}"></i></div><span class="pct">{pct}%</span></div>' if state != "waiting" else '<div class="prog"><div class="bar"></div><span class="pct">—</span></div>'),
+        "stat": f'<div class="cell">{state_badge(state)}{held_chip}</div>',
+        "speed": speed_cell,
         "eta": f'<div class="cell t2">{eta}</div>',
         "added": f'<div class="cell t2">{added}</div>',
-        "act": f'<div class="cell t2">{icon("more", 16)}</div>',
+        "act": f'<div class="acts">{acts}</div>',
     }
     cls = "tr" + (" sel" if sel else "") + (" hover" if hover else "")
     return f'<div class="{cls}">' + "".join(cells[k] for k in keys) + "</div>"
@@ -220,7 +271,7 @@ def table(width, rows, selected=(), hover=None, checked=()):
 
 
 def sidebar(active="All", counts=None, collapsed=False):
-    counts = counts or {"All": 14, "Downloading": 3, "Waiting": 2, "Paused": 1, "Completed": 6, "Failed": 1}
+    counts = counts or {"All": 15, "Downloading": 3, "Waiting": 2, "Paused": 1, "Completed": 6, "Failed": 1}
     def item(label, ic, n=None):
         on = " active" if label == active else ""
         num = f'<span class="n">{n}</span>' if n is not None else ""
@@ -257,10 +308,13 @@ def filterbar(count="14 tasks", status="All", sort="Newest", focus_search=False)
             f'<span class="count">{count}</span></div>')
 
 
-def bulkbar(n, send_enabled=False):
+def bulkbar(n, send_enabled=False, held_any=True):
     d = "" if send_enabled else " dis"
-    return (f'<div class="bulk"><b>{n} selected</b><div class="btn">{icon("play", 14)}Start</div><div class="btn">{icon("pause", 14)}Pause</div>'
-            f'<div class="btn">{icon("stop", 14)}Stop</div><div class="btn{d}">{icon("send", 14)}Send…</div>'
+    rel = "" if held_any else " dis"
+    return (f'<div class="bulk"><b>{n} selected</b><div class="btn">{icon("pause", 14)}Pause</div><div class="btn">{icon("play", 14)}Resume</div>'
+            f'<div class="btn">{icon("lock", 14)}Hold</div><div class="btn{rel}">{icon("unlock", 14)}Release</div>'
+            f'<div class="btn">{icon("arrow-up", 14)}Priority {icon("chev-down", 12)}</div><div class="btn">{icon("x-circle", 14)}Cancel</div>'
+            f'<div class="tsep" style="margin:0 4px"></div><div class="btn{d}">{icon("send", 14)}Send…</div>'
             f'<div class="btn dtert">{icon("trash", 14)}Delete</div><div class="btn clr">{icon("x", 14)}Clear selection</div></div>')
 
 
@@ -338,7 +392,7 @@ def dlg_details(tab="Information"):
     if tab == "Information":
         kv = [("Name", "video.mp4"), ("Status", state_badge("downloading") + " · 63%"), ("URL", "https://x.com/i/status/1834…/video"),
               ("Effective URL", "https://video.twimg.example/vid/avc1/1280x720/video.mp4"), ("Size", "84.2 MB"),
-              ("Downloaded", "53.0 MB"), ("Speed", "12.4 MB/s"), ("Remaining", "00:03"), ("Destination", "~/Downloads/video.mp4"),
+              ("Downloaded", "53.0 MB"), ("Speed", "12.4 MB/s"), ("Remaining", "00:03"), ("Priority", "High"), ("Queue position", "2 of 2 in High"), ("Held", "No"), ("Destination", "~/Downloads/video.mp4"),
               ("Resume support", "Yes (byte ranges)"), ("Backend", "Direct HTTP"), ("Resolver", "yt-dlp")]
         body = '<div class="kv">' + "".join(f'<div class="k">{k}</div><div class="v">{v}</div>' for k, v in kv) + "</div>"
     elif tab == "Connections":
@@ -351,23 +405,46 @@ def dlg_details(tab="Information"):
         body = '<div class="log mono">' + "".join(f'<div><span class="t3">{t}</span>  <b>{m}</b></div>' for t, m in lines) + "</div>"
     hdr = (f'<div class="dlg-h">{icon("video", 18)}<span>video.mp4</span><span class="chip c-info" style="margin-left:6px">{icon("arrow-down", 12)}Downloading</span><span class="x">{icon("x", 16)}</span></div>')
     f = f'<div class="dlg-f"><div class="l" style="display:flex;gap:8px">{btn("Open folder", "", "folder")}{btn("Pause", "", "pause")}</div>{btn("Close", "primary")}</div>'
-    return dialog(hdr + f'<div class="tabs" style="margin-top:8px">{tabs}</div><div class="dlg-b" style="padding:14px 16px;height:322px;overflow:hidden">{body}</div>' + f, 660)
+    return dialog(hdr + f'<div class="tabs" style="margin-top:8px">{tabs}</div><div class="dlg-b" style="padding:14px 16px;height:392px;overflow:hidden">{body}</div>' + f, 660)
 
 
-def ctx_menu(x, y):
-    it = lambda ic, l, k="", c="": f'<div class="mi {c}">{icon(ic, 15)}<span>{l}</span><span class="k">{k}</span></div>'
-    m = (it("external", "Open", "Enter") + it("folder", "Open folder") + it("info", "Details", "Alt+Enter") + '<div class="sep"></div>' +
-         it("send", "Share…", "", "hl") + '<div class="sep"></div>' + it("copy", "Copy source URL") + it("x", "Remove from list", "Del") +
-         it("trash", "Delete file…", "", "dg"))
-    return f'<div class="menu" style="left:{x}px;top:{y}px">{m}</div>'
+def ctx_menu(x, y, kind="completed", priority_sub=False, hl=None, current="normal"):
+    """kind: downloading | retrying | paused | waiting | held | failed | cancelled | completed.
+    Only actions valid for the state are shown; Move up/down disable at a band edge."""
+    it = lambda ic, l, k="", c="": f'<div class="mi {c}{" hl" if hl == l else ""}">{icon(ic, 15)}<span>{l}</span><span class="k">{k}</span></div>'
+    sep = '<div class="sep"></div>'
+    prio = f'<div class="mi{" hl" if priority_sub else ""}">{icon("arrow-up", 15)}<span>Priority</span><span class="k">{icon("chev-right", 14)}</span></div>'
+    order = prio + it("arrow-up", "Move up") + it("arrow-down", "Move down", "", "dis" if kind == "waiting" else "")
+    cancel = it("x-circle", "Cancel", "", "dg")
+    if kind == "downloading":
+        m = it("pause", "Pause", "Space") + it("lock", "Hold") + sep + order + sep + cancel + sep + it("folder", "Open folder") + it("info", "Details", "Alt+Enter")
+    elif kind == "retrying":
+        m = it("refresh", "Retry now") + it("lock", "Hold") + sep + order + sep + cancel + sep + it("folder", "Open folder") + it("info", "Details", "Alt+Enter")
+    elif kind == "paused":
+        m = it("play", "Resume", "Space") + it("lock", "Hold") + sep + order + sep + cancel + sep + it("folder", "Open folder") + it("info", "Details", "Alt+Enter")
+    elif kind == "waiting":
+        m = it("lock", "Hold") + sep + order + sep + cancel + sep + it("info", "Details", "Alt+Enter")
+    elif kind == "held":
+        m = it("unlock", "Release") + sep + order + sep + cancel + sep + it("info", "Details", "Alt+Enter")
+    elif kind in ("failed", "cancelled"):
+        m = it("info", "Details", "Alt+Enter") + it("folder", "Open folder") + sep + it("x", "Remove from list", "Del") + it("trash", "Delete file…", "", "dg")
+    else:
+        m = (it("external", "Open", "Enter") + it("folder", "Open folder") + it("info", "Details", "Alt+Enter") + sep + it("send", "Share…", "", "hl") + sep +
+             it("copy", "Copy source URL") + it("x", "Remove from list", "Del") + it("trash", "Delete file…", "", "dg"))
+    out = f'<div class="menu" style="left:{x}px;top:{y}px">{m}</div>'
+    if priority_sub:
+        chk = lambda lab, key: f'<div class="mi">{icon("check", 15) if current == key else "<span style=width:15px></span>"}<span>{lab}</span></div>'
+        sub = chk("High", "high") + chk("Normal", "normal") + chk("Low", "low") + '<div class="sep"></div><div class="t2" style="padding:2px 10px 4px;font-size:10.5px;line-height:14px;max-width:170px">Order changes apply within the same priority.</div>'
+        out += f'<div class="menu" style="left:{x + 236}px;top:{y + 108}px;min-width:180px">{sub}</div>'
+    return out
 
 
 def dlg_share():
     o = lambda ic, t, d, sel="": f'<div class="opt {sel}"><div class="ico">{icon(ic, 20)}</div><div><b>{t}</b><small>{d}</small></div><span class="go">{icon("chev-right", 16)}</span></div>'
-    b = (f'<div class="t2" style="margin:2px 0 12px;display:flex;align-items:center;gap:8px">{icon("video", 16)}<span>video.mp4 · 84.2 MB</span></div>' +
+    b = (f'<div class="t2" style="margin:2px 0 12px;display:flex;align-items:center;gap:8px">{icon("video", 16)}<span>holiday.mp4 · 198 MB</span></div>' +
          o("phone", "Send to device", "Direct transfer to your phone with FriendSend.") +
          o("link", "Share by link", "Anyone with the link can open it while this PC is online."))
-    return dialog(dh('Share "video.mp4"') + f'<div class="dlg-b">{b}</div><div class="dlg-f">{btn("Cancel")}</div>', 480)
+    return dialog(dh('Share "holiday.mp4"') + f'<div class="dlg-b">{b}</div><div class="dlg-f">{btn("Cancel")}</div>', 480)
 
 
 def dev_row(name, ic, sub, sel=False, dis=False, chip=""):
@@ -384,7 +461,7 @@ UNPAIRED = f'<span class="chip c-neutral">{icon("plus-circle", 12)}Not paired</s
 
 
 def dlg_send(offline=False):
-    file = f'<div class="t2" style="margin:2px 0 10px;display:flex;align-items:center;gap:8px">{icon("video", 16)}<span>video.mp4 · 84.2 MB</span></div>'
+    file = f'<div class="t2" style="margin:2px 0 10px;display:flex;align-items:center;gap:8px">{icon("video", 16)}<span>holiday.mp4 · 198 MB</span></div>'
     d1 = dev_row("Pixel 8", "phone", "Last seen just now", sel=not offline, chip=ONLINE)
     d2 = dev_row("Galaxy Tab A9", "tablet", "Last seen yesterday, 18:42", sel=offline, dis=not offline, chip=OFFLINE)
     ban = ""
@@ -420,7 +497,7 @@ def dlg_progress(kind):
                 f'<div class="banner c-info" style="margin-top:14px">{icon("shield-check", 18)}<div class="tx">The original file will not be changed. This can take a few minutes; you can keep using Rýchlik.</div></div>')
     else:
         body = (steps(1) + '<b style="font-size:13px">Sending to Pixel 8…</b><div class="bigprog"><i style="width:62%"></i></div>'
-                '<div style="display:flex;justify-content:space-between" class="t2"><span>52.2 MB of 84.2 MB · 18.4 MB/s</span><span>62%</span></div>'
+                '<div style="display:flex;justify-content:space-between" class="t2"><span>122.8 MB of 198 MB · 18.4 MB/s</span><span>62%</span></div>'
                 f'<div class="t2" style="margin-top:14px;display:flex;gap:8px;align-items:center">{icon("info", 15)}Keep FriendSend open on the device.</div>')
     return dialog(dh(title, "send") + f'<div class="dlg-b">{body}</div><div class="dlg-f">{btn("Cancel")}</div>', 480)
 
@@ -524,9 +601,35 @@ def component_sheet(theme, w=1366, h=900):
 def dlg_link(state="online"):
     chips = {"online": ('<span class="chip c-success">' + icon("dot", 10) + "Online</span>"),
              "offline": ('<span class="chip c-neutral">' + icon("dot-hollow", 10) + "Offline</span>")}
-    b = (f'<div style="display:flex;align-items:center;gap:8px;margin:2px 0 4px"><span class="t2">{icon("video", 16)}</span><b>video.mp4</b><span class="t2">· 84.2 MB</span><span style="margin-left:auto">{chips[state]}</span></div>'
+    b = (f'<div style="display:flex;align-items:center;gap:8px;margin:2px 0 4px"><span class="t2">{icon("video", 16)}</span><b>holiday.mp4</b><span class="t2">· 198 MB</span><span style="margin-left:auto">{chips[state]}</span></div>'
          f'<div class="lbl">Link</div><div style="display:flex;gap:8px">{field("https://s.friendsend.example/kQ7xZ2mPaB9r", "link", extra="flex:1;min-width:0")}{btn("Copy link", "primary", "copy")}</div>'
          f'<div style="display:flex;gap:8px;margin-top:12px">{btn("Open in browser", "", "external")}{btn("Show QR code", "", "qr")}{btn("Share via phone", "", "phone")}</div>'
          f'<div class="banner c-info" style="margin-top:14px">{icon("info", 18)}<div class="tx"><b>Available while this PC is online.</b>Anyone with the link can watch or download the video. Stop sharing to close the link.</div></div>')
     f = f'<div class="dlg-f"><div class="l">{btn("Stop sharing", "dtert", "x-circle")}</div>{btn("Close", "primary")}</div>'
     return dialog(dh("Share by link", "link") + f'<div class="dlg-b">{b}</div>' + f, 560)
+
+
+def queues_view(w):
+    byname = {r[0]: r for r in ROWS}
+    bands = [("High", ["Fedora-Workstation-Live-x86_64-41.iso", "video.mp4"]),
+             ("Normal", ["lecture-03-networking.webm", "archive.zip", "setup.AppImage"]),
+             ("Low", ["backup-2026-09.tar.zst", "movie.mkv"])]
+    tpl = "22px 34px minmax(240px,1fr) 80px 170px 100px 60px"
+    head = "".join(f"<div>{h}</div>" for h in ["", "#", "Name", "Size", "Status", "Held", ""])
+    body = ""
+    for band, names in bands:
+        body += f'<div class="band">{band} priority<span class="n">{len(names)} downloads</span></div>'
+        for i, n in enumerate(names, 1):
+            r = byname[n]
+            sel = n == "archive.zip"
+            held = f'<span class="held" style="margin:0">{icon("lock", 11)}Held</span>' if n in HELD else '<span class="t3">—</span>'
+            body += (f'<div class="tr{" sel" if sel else ""}"><div class="grip">{icon("grip", 16)}</div><div class="cell t2">{i}</div>'
+                     f'<div class="name">{icon(EXT_ICON.get(r[2], "box"), 16)}<div class="t"><b>{n}</b><small>{r[1]}</small></div></div>'
+                     f'<div class="cell">{r[3]}</div><div class="cell">{state_badge(r[5])}</div><div class="cell">{held}</div>'
+                     f'<div class="acts"><span class="ab">{icon("arrow-up", 15)}</span><span class="ab">{icon("arrow-down", 15)}</span></div></div>')
+    bar = (f'<div class="bulk"><b>1 selected</b><div class="btn">{icon("arrow-up", 14)}Move up</div><div class="btn">{icon("arrow-down", 14)}Move down</div>'
+           f'<div class="btn">{icon("arrow-up", 14)}Priority {icon("chev-down", 12)}</div><div class="btn dis">{icon("lock", 14)}Hold</div><div class="btn">{icon("unlock", 14)}Release</div></div>')
+    return (f'<main class="content"><div class="pagehead"><h1>Queues</h1></div>'
+            f'<div class="t2" style="margin:2px 0 0">One download queue with three priority bands. Downloads start from the top of High, then Normal, then Low. Reordering works within a band.</div>'
+            f'{bar}<div class="table" style="--cols:{tpl}"><div class="thead">{head}</div>{body}</div>'
+            f'<div class="t2" style="margin-top:12px;font-size:11.5px;display:flex;gap:8px">{icon("info", 15)}<span><b>Held</b> keeps a download from starting and does not stop one that is running. <b>Pause</b> stops a running transfer.</span></div></main>')

@@ -1,7 +1,89 @@
 {
   "name": "Rýchlik + FriendSend final design tokens",
   "version": "1.0.0-design",
-  "status": "DESIGN ONLY - pending visual approval. Not implemented in Qt or Flutter.",
+  "status": {
+    "semantics": {
+      "downloading": {
+        "color": "info",
+        "glyph": "arrow-down",
+        "label": "Downloading"
+      },
+      "retrying": {
+        "color": "info",
+        "glyph": "refresh",
+        "label": "Retrying"
+      },
+      "waiting": {
+        "color": "neutral",
+        "glyph": "clock",
+        "label": "Waiting"
+      },
+      "paused": {
+        "color": "warning",
+        "glyph": "pause",
+        "label": "Paused"
+      },
+      "completed": {
+        "color": "success",
+        "glyph": "check",
+        "label": "Completed"
+      },
+      "failed": {
+        "color": "error",
+        "glyph": "x",
+        "label": "Failed"
+      },
+      "trustedOnline": {
+        "color": "success",
+        "glyph": "dot-filled",
+        "label": "Trusted - Online"
+      },
+      "trustedOffline": {
+        "color": "neutral",
+        "glyph": "dot-hollow",
+        "label": "Trusted - Offline"
+      },
+      "pairing": {
+        "color": "info",
+        "glyph": "refresh",
+        "label": "Pairing"
+      },
+      "identityChanged": {
+        "color": "error",
+        "glyph": "shield-alert",
+        "label": "Identity changed"
+      },
+      "discovered": {
+        "color": "neutral",
+        "glyph": "plus-circle",
+        "label": "Not paired"
+      },
+      "held": {
+        "color": "neutral",
+        "glyph": "lock",
+        "label": "Held",
+        "note": "Queue-level attribute (QueueEntryState.PAUSED). Shown as a secondary chip next to the task status; never replaces it and never reuses the Pause glyph."
+      },
+      "cancelled": {
+        "color": "neutral",
+        "glyph": "x-circle",
+        "label": "Cancelled"
+      }
+    },
+    "rule": "Status is never conveyed by color alone: every status has a glyph AND a text label. Hold and Pause are different concepts with different glyphs (lock vs pause bars) and different labels.",
+    "actionGlyphs": {
+      "pause": "pause",
+      "resume": "play",
+      "hold": "lock",
+      "release": "unlock",
+      "retryNow": "refresh",
+      "cancel": "x-circle",
+      "priority": "arrow-up",
+      "moveUp": "arrow-up",
+      "moveDown": "arrow-down",
+      "reorderHandle": "grip"
+    }
+  },
   "derivedFrom": [
     "/mnt/Data/Rychlik/Desktop UI Pack v2/design_tokens_v3.json (colors, desktop dimensions)",
     "/mnt/Data/Rychlik/Desktop UI Pack v2/rychlik_v3_dark.qss and rychlik_v3_light.qss (radii, control heights)",
@@ -15,42 +97,114 @@
   ],
   "color": {
     "dark": {
-      "surface": {"background": "#121217", "primary": "#18181F", "secondary": "#1F1F28", "elevated": "#272832"},
-      "text": {"primary": "#E8E9EF", "secondary": "#A3A6B4", "disabled": "#686B79", "onAccent": "#FFFFFF"},
-      "border": {"default": "#353744", "strong": "#4B4E60"},
-      "accent": {"primary": "#6C5DF6", "hover": "#6152EC", "pressed": "#5344D8", "text": "#B4ADFF", "tintOpacity": 0.16},
+      "surface": {
+        "background": "#121217",
+        "primary": "#18181F",
+        "secondary": "#1F1F28",
+        "elevated": "#272832"
+      },
+      "text": {
+        "primary": "#E8E9EF",
+        "secondary": "#A3A6B4",
+        "disabled": "#686B79",
+        "onAccent": "#FFFFFF"
+      },
+      "border": {
+        "default": "#353744",
+        "strong": "#4B4E60"
+      },
+      "accent": {
+        "primary": "#6C5DF6",
+        "hover": "#6152EC",
+        "pressed": "#5344D8",
+        "text": "#B4ADFF",
+        "tintOpacity": 0.16
+      },
       "status": {
-        "info": "#468BFF", "infoText": "#6AA3FF",
-        "success": "#4AC26B", "successText": "#4AC26B",
-        "warning": "#E6B336", "warningText": "#E6B336",
-        "error": "#E14E5F", "errorText": "#F0707F", "errorSolid": "#C4364A",
+        "info": "#468BFF",
+        "infoText": "#6AA3FF",
+        "success": "#4AC26B",
+        "successText": "#4AC26B",
+        "warning": "#E6B336",
+        "warningText": "#E6B336",
+        "error": "#E14E5F",
+        "errorText": "#F0707F",
+        "errorSolid": "#C4364A",
         "neutral": "#A3A6B4"
       },
-      "icon": {"neutral": "#B2B5C2"},
+      "icon": {
+        "neutral": "#B2B5C2"
+      },
       "focus": "#8B80FF",
       "scrim": "rgba(6,6,10,0.62)"
     },
     "light": {
-      "surface": {"background": "#F6F7F9", "primary": "#FFFFFF", "secondary": "#F8F8FB", "elevated": "#FFFFFF"},
-      "text": {"primary": "#282A32", "secondary": "#5F6270", "disabled": "#8F929D", "onAccent": "#FFFFFF"},
-      "border": {"default": "#D6D8E0", "strong": "#B7BAC6"},
-      "accent": {"primary": "#6050E2", "hover": "#5142D0", "pressed": "#4536B8", "text": "#4C3FCB", "tintOpacity": 0.10},
+      "surface": {
+        "background": "#F6F7F9",
+        "primary": "#FFFFFF",
+        "secondary": "#F8F8FB",
+        "elevated": "#FFFFFF"
+      },
+      "text": {
+        "primary": "#282A32",
+        "secondary": "#5F6270",
+        "disabled": "#8F929D",
+        "onAccent": "#FFFFFF"
+      },
+      "border": {
+        "default": "#D6D8E0",
+        "strong": "#B7BAC6"
+      },
+      "accent": {
+        "primary": "#6050E2",
+        "hover": "#5142D0",
+        "pressed": "#4536B8",
+        "text": "#4C3FCB",
+        "tintOpacity": 0.1
+      },
       "status": {
-        "info": "#377DE9", "infoText": "#1F62CF",
-        "success": "#35A658", "successText": "#1E7A3D",
-        "warning": "#B98207", "warningText": "#8A5F00",
-        "error": "#CB3F4F", "errorText": "#B02B3B", "errorSolid": "#B02B3B",
+        "info": "#377DE9",
+        "infoText": "#1F62CF",
+        "success": "#35A658",
+        "successText": "#1E7A3D",
+        "warning": "#B98207",
+        "warningText": "#8A5F00",
+        "error": "#CB3F4F",
+        "errorText": "#B02B3B",
+        "errorSolid": "#B02B3B",
         "neutral": "#5F6270"
       },
-      "icon": {"neutral": "#676A76"},
+      "icon": {
+        "neutral": "#676A76"
+      },
       "focus": "#6050E2",
       "scrim": "rgba(20,20,30,0.38)"
     }
   },
-  "spacing": {"2": 2, "4": 4, "6": 6, "8": 8, "12": 12, "16": 16, "20": 20, "24": 24, "32": 32},
+  "spacing": {
+    "2": 2,
+    "4": 4,
+    "6": 6,
+    "8": 8,
+    "12": 12,
+    "16": 16,
+    "20": 20,
+    "24": 24,
+    "32": 32
+  },
   "radius": {
-    "desktop": {"small": 4, "medium": 7, "large": 10, "pill": 999},
-    "mobile": {"small": 8, "medium": 12, "large": 20, "pill": 999}
+    "desktop": {
+      "small": 4,
+      "medium": 7,
+      "large": 10,
+      "pill": 999
+    },
+    "mobile": {
+      "small": 8,
+      "medium": 12,
+      "large": 20,
+      "pill": 999
+    }
   },
   "typography": {
     "family": {
@@ -60,58 +214,129 @@
       "mockupNote": "Mockups render with Noto Sans (desktop) and Roboto (mobile) because Inter is not installed on the design machine; layouts must be re-checked with the real fonts."
     },
     "desktop": {
-      "caption": {"size": 11, "lineHeight": 16, "weight": 400},
-      "body": {"size": 12, "lineHeight": 18, "weight": 400},
-      "table": {"size": 12, "lineHeight": 16, "weight": 400, "nameWeight": 600},
-      "heading": {"size": 15, "lineHeight": 22, "weight": 600},
-      "dialogTitle": {"size": 14, "lineHeight": 20, "weight": 600}
+      "caption": {
+        "size": 11,
+        "lineHeight": 16,
+        "weight": 400
+      },
+      "body": {
+        "size": 12,
+        "lineHeight": 18,
+        "weight": 400
+      },
+      "table": {
+        "size": 12,
+        "lineHeight": 16,
+        "weight": 400,
+        "nameWeight": 600
+      },
+      "heading": {
+        "size": 15,
+        "lineHeight": 22,
+        "weight": 600
+      },
+      "dialogTitle": {
+        "size": 14,
+        "lineHeight": 20,
+        "weight": 600
+      }
     },
     "mobile": {
-      "caption": {"size": 12, "lineHeight": 16, "weight": 400},
-      "body": {"size": 15, "lineHeight": 22, "weight": 400},
-      "title": {"size": 20, "lineHeight": 28, "weight": 600},
-      "heading": {"size": 28, "lineHeight": 36, "weight": 600}
+      "caption": {
+        "size": 12,
+        "lineHeight": 16,
+        "weight": 400
+      },
+      "body": {
+        "size": 15,
+        "lineHeight": 22,
+        "weight": 400
+      },
+      "title": {
+        "size": 20,
+        "lineHeight": 28,
+        "weight": 600
+      },
+      "heading": {
+        "size": 28,
+        "lineHeight": 36,
+        "weight": 600
+      }
     }
   },
   "elevation": {
-    "dialog": {"dark": "0 12px 40px rgba(0,0,0,0.55), 0 0 0 1px #353744", "light": "0 12px 40px rgba(30,30,50,0.22), 0 0 0 1px #D6D8E0"},
-    "popover": {"dark": "0 6px 20px rgba(0,0,0,0.5), 0 0 0 1px #353744", "light": "0 6px 20px rgba(30,30,50,0.18), 0 0 0 1px #D6D8E0"},
-    "mobileCard": {"dark": "0 0 0 1px #353744", "light": "0 1px 3px rgba(30,30,50,0.10), 0 0 0 1px #E3E5EC"}
+    "dialog": {
+      "dark": "0 12px 40px rgba(0,0,0,0.55), 0 0 0 1px #353744",
+      "light": "0 12px 40px rgba(30,30,50,0.22), 0 0 0 1px #D6D8E0"
+    },
+    "popover": {
+      "dark": "0 6px 20px rgba(0,0,0,0.5), 0 0 0 1px #353744",
+      "light": "0 6px 20px rgba(30,30,50,0.18), 0 0 0 1px #D6D8E0"
+    },
+    "mobileCard": {
+      "dark": "0 0 0 1px #353744",
+      "light": "0 1px 3px rgba(30,30,50,0.10), 0 0 0 1px #E3E5EC"
+    }
   },
   "motion": {
-    "fast": {"ms": 120, "easing": "cubic-bezier(0.2, 0, 0, 1)", "use": "hover, focus, press"},
-    "normal": {"ms": 200, "easing": "cubic-bezier(0.2, 0, 0, 1)", "use": "dialog/bottom-sheet enter, progress changes"},
+    "fast": {
+      "ms": 120,
+      "easing": "cubic-bezier(0.2, 0, 0, 1)",
+      "use": "hover, focus, press"
+    },
+    "normal": {
+      "ms": 200,
+      "easing": "cubic-bezier(0.2, 0, 0, 1)",
+      "use": "dialog/bottom-sheet enter, progress changes"
+    },
     "reducedMotion": "Respect the OS reduced-motion setting: replace all transitions with instant changes."
   },
   "size": {
     "desktop": {
-      "sidebarWidth": 190, "menuHeight": 28, "toolbarHeight": 54, "statusbarHeight": 28,
-      "taskRowHeight": 42, "tableHeaderHeight": 30, "controlHeight": 30,
-      "progressHeight": 6, "icon": {"sidebar": 16, "toolbar": 18, "row": 16, "menu": 15, "dialog": 18},
-      "minWindow": {"width": 1100, "height": 640},
+      "sidebarWidth": 190,
+      "menuHeight": 28,
+      "toolbarHeight": 54,
+      "statusbarHeight": 28,
+      "taskRowHeight": 42,
+      "tableHeaderHeight": 30,
+      "controlHeight": 30,
+      "progressHeight": 6,
+      "icon": {
+        "sidebar": 16,
+        "toolbar": 18,
+        "row": 16,
+        "menu": 15,
+        "dialog": 18
+      },
+      "minWindow": {
+        "width": 1100,
+        "height": 640
+      },
       "canvasNote": "Sizes are window CLIENT-area sizes (no title bar or panel)."
     },
     "mobile": {
-      "touchTarget": 48, "buttonHeight": 52, "appHeaderHeight": 56, "screenPadding": 20,
-      "progressHeight": 8, "icon": {"inline": 20, "header": 24, "hero": 40, "shareTile": 44},
-      "shareTile": {"width": 84, "height": 92, "columns": "floor((width - 2*screenPadding) / 84)", "minColumns": 3},
-      "supportedViewports": ["360x800", "390x844", "412x915"]
+      "touchTarget": 48,
+      "buttonHeight": 52,
+      "appHeaderHeight": 56,
+      "screenPadding": 20,
+      "progressHeight": 8,
+      "icon": {
+        "inline": 20,
+        "header": 24,
+        "hero": 40,
+        "shareTile": 44
+      },
+      "shareTile": {
+        "width": 84,
+        "height": 92,
+        "columns": "floor((width - 2*screenPadding) / 84)",
+        "minColumns": 3
+      },
+      "supportedViewports": [
+        "360x800",
+        "390x844",
+        "412x915"
+      ]
     }
-  },
-  "status": {
-    "semantics": {
-      "downloading": {"color": "info", "glyph": "arrow-down", "label": "Downloading"},
-      "retrying": {"color": "info", "glyph": "refresh", "label": "Retrying"},
-      "waiting": {"color": "neutral", "glyph": "clock", "label": "Waiting"},
-      "paused": {"color": "warning", "glyph": "pause", "label": "Paused"},
-      "completed": {"color": "success", "glyph": "check", "label": "Completed"},
-      "failed": {"color": "error", "glyph": "x", "label": "Failed"},
-      "trustedOnline": {"color": "success", "glyph": "dot-filled", "label": "Trusted - Online"},
-      "trustedOffline": {"color": "neutral", "glyph": "dot-hollow", "label": "Trusted - Offline"},
-      "pairing": {"color": "info", "glyph": "refresh", "label": "Pairing"},
-      "identityChanged": {"color": "error", "glyph": "shield-alert", "label": "Identity changed"},
-      "discovered": {"color": "neutral", "glyph": "plus-circle", "label": "Not paired"}
-    },
-    "rule": "Status is never conveyed by color alone: every status has a glyph AND a text label."
   }
 }

@@ -120,3 +120,24 @@ Phone:   F17 Trusted computer -> Forget this computer -> F18 -> back to F01
 Re-pair: run flow 4 again. Old credentials never resurrect old trust.
 Identity changed (TLS pin mismatch): D22 (identity-changed variant) offers Forget device only. There is no "trust the new identity" action.
 ```
+
+## 11. Queue control (preserving existing backend actions)
+
+Hold is not Pause. **Pause** stops a running transfer (task-level cooperative pause, accepted only while TRANSFERRING; Resume only when PAUSED).
+**Hold** is a queue-level flag (QueueEntryState.PAUSED): the scheduler must not start the item; it never stops a running transfer.
+A held item shows a separate "Held" chip next to its task status. Tooltip for Hold: "Do not start this download until it is released. A running transfer is not stopped. Use Pause for that."
+
+| Task state | Context menu (top group) | Hover row actions | Notes |
+|---|---|---|---|
+| TRANSFERRING | Pause, Hold | Pause, Cancel | |
+| PAUSED | Resume, Hold | Resume, Cancel | |
+| RETRY_WAIT | Retry now, Hold | Retry now, Cancel | "Retrying in 12 s" + inline Retry now |
+| READY / waiting | Hold (Release when held) | Hold/Release, Cancel | |
+| COMPLETED | Open, Open folder, Share... | Open folder, Share | terminal; no queue actions |
+| FAILED | none (Details, Open folder, Remove, Delete file...) | more | no retry command exists; a new download must be added |
+| CANCELLED | Details, Remove, Delete file... | more | terminal |
+
+Second group for every queued item: Priority > High / Normal / Low, Move up, Move down. Reordering only works inside a priority band; at a band edge
+Move up/down are disabled with the reason. Third group: Cancel (also reachable from hover actions and the bulk bar).
+Bulk bar: Pause, Resume, Hold, Release, Priority, Cancel | Send... (completed only), Delete. No reorder in bulk.
+The Queues view (D26) is the place for explicit order: three priority bands, position numbers, drag handle and arrows.
