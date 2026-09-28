@@ -6,6 +6,8 @@ import '../handoff/handoff_controller.dart';
 import '../identity/device_identity.dart';
 import '../platform/incoming_share.dart';
 import '../platform/media_bridge.dart';
+import '../monetization/billing_adapter.dart';
+import '../monetization/entitlement_service.dart';
 import '../platform/recent_targets.dart';
 import '../platform/share_bridge.dart';
 import '../platform/share_targets.dart';
@@ -17,6 +19,7 @@ import 'screens/qr_scan_screen.dart';
 import 'screens/target_picker.dart';
 import 'screens/transfer_screens.dart';
 import 'screens/trusted_screen.dart';
+import 'screens/unlock_screen.dart';
 import 'theme/fs_theme.dart';
 
 /// Chooses the approved screen for the controller's presentation state. Screens render controller state; they
@@ -34,6 +37,8 @@ class HomeScreen extends StatefulWidget {
     this.textSharer,
     this.recentTargets = const NoRecentTargets(),
     this.videoFetcher,
+    this.entitlement = const AlwaysUnlockedEntitlement(),
+    this.billing = const UnavailableBillingAdapter(),
   });
 
   static Widget _defaultScanner(BuildContext context) => const QrScanScreen();
@@ -48,6 +53,11 @@ class HomeScreen extends StatefulWidget {
 
   /// When present, a shared link can also be sent as the downloaded video itself.
   final VideoFetcher? videoFetcher;
+
+  /// FriendSend's 5-free-sends-then-unlock model. Gates every send action (targeted or system-sheet); only a
+  /// successful *targeted* send is ever counted against the trial.
+  final EntitlementSource entitlement;
+  final BillingAdapter billing;
 
   final DeviceIdentity identity;
   final SecurePairingManager pairingManager;
@@ -74,6 +84,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _saveNote;
   bool _saving = false;
   int _videoRun = 0; // identifies the current download so a late result of a cancelled/replaced one is ignored
+  EntitlementStatus _entitlementStatus = const EntitlementStatus(unlocked: true, remainingTrialSends: 0);
+  bool _showUnlock = false;
+  StreamSubscription<EntitlementStatus>? _entitlementSub;
 
   @override
   void initState() {
@@ -87,6 +100,12 @@ class _HomeScreenState extends State<HomeScreen> {
     _incomingSub = widget.incomingShares.updates.listen((text) {
       if (mounted) _showIncoming(text);
     });
+    widget.entitlement.status().then((status) {
+      if (mounted) setState(() => _entitlementStatus = status);
+    });
+    _entitlementSub = widget.entitlement.changes.listen((status) {
+      if (mounted) setState(() => _entitlementStatus = status);
+    });
     _sub = widget.controller.snapshots.listen(_onState);
     _loadDesktop();
     if (widget.controller.current.state == AppState.choosingTarget) _scheduleSheet();
@@ -97,6 +116,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _sub?.cancel();
     _incomingSub?.cancel();
     _videoSub?.cancel();
+    _entitlementSub?.cancel();
     super.dispose();
   }
 
@@ -108,6 +128,27 @@ class _HomeScreenState extends State<HomeScreen> {
   void _onState(HandoffUiSnapshot s) {
     if (s.state == AppState.ready) _loadDesktop();
     if (s.state == AppState.choosingTarget) _scheduleSheet();
+  }
+
+  /// True when a send may proceed; otherwise shows the unlock screen and returns false. Every send entry point
+  /// (targeted or system-sheet, from either the received-file flow or the incoming-share flow) goes through this.
+  bool _requireEntitlement() {
+    if (_entitlementStatus.canSend) return true;
+    setState(() => _showUnlock = true);
+    return false;
+  }
+
+  void _gatedChooseApp() {
+    if (_requireEntitlement()) widget.controller.chooseApp();
+  }
+
+  Future<void> _onUnlocked() async {
+    final status = await widget.entitlement.unlock();
+    if (!mounted) return;
+    setState(() {
+      _entitlementStatus = status;
+      _showUnlock = false;
+    });
   }
 
   void _scheduleSheet() {
@@ -157,7 +198,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _sendToTarget(ShareTarget target) async {
     final result = await widget.controller.shareToTarget(target);
-    if (result == TargetShareResult.opened || !mounted) return;
+    if (result == TargetShareResult.opened) {
+      final status = await widget.entitlement.recordSuccessfulTargetedSend();
+      if (mounted) setState(() => _entitlementStatus = status);
+      return;
+    }
+    if (!mounted) return;
     final message = result == TargetShareResult.targetUnavailable
         ? '${target.label} isn’t available any more. Pick another app.'
         : 'Couldn’t open ${target.label}. The file is still here.';
@@ -276,6 +322,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final text = _incomingText;
     final sharer = widget.textSharer;
     if (text == null || sharer == null) return;
+    if (!_requireEntitlement()) return;
     final video = _videoPhase == IncomingVideoPhase.ready ? _video : null;
     final outcome = video != null
         ? await sharer.shareFileToTarget(path: video.path, displayName: video.displayName, mimeType: video.mimeType, targetId: target.id)
@@ -283,8 +330,12 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     if (outcome == TargetShareResult.opened) {
       await widget.recentTargets.record(target.id);
+      final status = await widget.entitlement.recordSuccessfulTargetedSend();
       if (!mounted) return;
-      setState(() => _incomingText = null);
+      setState(() {
+        _incomingText = null;
+        _entitlementStatus = status;
+      });
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -301,6 +352,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final text = _incomingText;
     final sharer = widget.textSharer;
     if (text == null || sharer == null) return;
+    if (!_requireEntitlement()) return;
     final video = _videoPhase == IncomingVideoPhase.ready ? _video : null;
     final outcome = video != null
         ? await sharer.shareFileViaSheet(path: video.path, displayName: video.displayName, mimeType: video.mimeType)
@@ -386,6 +438,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_showUnlock) {
+      return UnlockScreen(billing: widget.billing, onUnlocked: _onUnlocked, onNotNow: () => setState(() => _showUnlock = false));
+    }
     final incoming = _incomingText;
     if (incoming != null) {
       return IncomingShareScreen(
@@ -406,6 +461,7 @@ class _HomeScreenState extends State<HomeScreen> {
         onSaveVideo: _saveVideo,
         onSendVideo: _sendVideo,
         onCancelVideo: _cancelVideo,
+        trialRemaining: _entitlementStatus.unlocked ? null : _entitlementStatus.remainingTrialSends,
         onBackToLink: () => setState(() {
           _videoPhase = IncomingVideoPhase.idle;
           _video = null;
@@ -441,9 +497,9 @@ class _HomeScreenState extends State<HomeScreen> {
         return VerifyingScreen(state: s);
       case AppState.received:
       case AppState.choosingTarget:
-        return ReceivedScreen(state: s, onChooseApp: widget.controller.chooseApp, onDiscard: _discard);
+        return ReceivedScreen(state: s, onChooseApp: _gatedChooseApp, onDiscard: _discard, trialRemaining: _entitlementStatus.unlocked ? null : _entitlementStatus.remainingTrialSends);
       case AppState.handoffAccepted:
-        return HandoffAcceptedScreen(state: s, onDone: () => widget.controller.done(), onSendAgain: widget.controller.chooseApp);
+        return HandoffAcceptedScreen(state: s, onDone: () => widget.controller.done(), onSendAgain: _gatedChooseApp);
       case AppState.cancelled:
         return CancelledScreen(onDone: () => widget.controller.done());
       case AppState.error:

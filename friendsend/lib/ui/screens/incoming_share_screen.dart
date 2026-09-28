@@ -6,6 +6,7 @@ import '../format.dart';
 import '../theme/fs_theme.dart';
 import '../widgets.dart';
 import 'target_picker.dart';
+import 'unlock_screen.dart';
 
 enum IncomingVideoPhase { idle, downloading, ready, failed }
 
@@ -37,6 +38,7 @@ class IncomingShareScreen extends StatelessWidget {
     this.onCancelVideo,
     this.onBackToLink,
     this.onSaveVideo,
+    this.trialRemaining,
   });
 
   final String text;
@@ -49,6 +51,7 @@ class IncomingShareScreen extends StatelessWidget {
   final VoidCallback? onCancelVideo;
   final VoidCallback? onBackToLink;
   final VoidCallback? onSaveVideo;
+  final int? trialRemaining;
 
   static bool looksLikeLink(String text) {
     final t = text.trim();
@@ -98,7 +101,10 @@ class IncomingShareScreen extends StatelessWidget {
         const SizedBox(height: FsSpace.s12),
         ..._videoSection(context),
         const SizedBox(height: FsSpace.s16),
-        Text(video.phase == IncomingVideoPhase.ready ? 'Send video to' : 'Send to', style: FsText.caption(context)),
+        Row(children: [
+          Text(video.phase == IncomingVideoPhase.ready ? 'Send video to' : 'Send to', style: FsText.caption(context)),
+          if (trialRemaining != null) ...[const Spacer(), Flexible(child: TrialBadge(remaining: trialRemaining!))],
+        ]),
         const SizedBox(height: FsSpace.s4),
         Expanded(child: video.phase == IncomingVideoPhase.downloading ? const SizedBox.shrink() : _grid(context)),
       ]),

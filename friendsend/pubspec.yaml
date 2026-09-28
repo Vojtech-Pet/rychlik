@@ -58,6 +58,7 @@ dependencies:
   # primitives in lib/security/self_signed_cert.dart.
   pointycastle: ^4.0.0
   mobile_scanner: ^7.4.2
+  in_app_purchase: ^3.3.1
 
   # mDNS/DNS-SD advertisement on desktop-facing metadata (device_id,
   # protocol/security profile) is done via Android's native NsdManager

@@ -5,6 +5,7 @@ import '../../protocol/protocol.dart';
 import '../format.dart';
 import '../theme/fs_theme.dart';
 import '../widgets.dart';
+import 'unlock_screen.dart';
 
 class ReadyScreen extends StatelessWidget {
   const ReadyScreen({super.key, required this.computerName, this.onOpenComputer});
@@ -150,11 +151,12 @@ class VerifyingScreen extends StatelessWidget {
 }
 
 class ReceivedScreen extends StatelessWidget {
-  const ReceivedScreen({super.key, required this.state, required this.onChooseApp, required this.onDiscard});
+  const ReceivedScreen({super.key, required this.state, required this.onChooseApp, required this.onDiscard, this.trialRemaining});
 
   final HandoffUiSnapshot state;
   final VoidCallback onChooseApp;
   final VoidCallback onDiscard;
+  final int? trialRemaining;
 
   @override
   Widget build(BuildContext context) {
@@ -164,6 +166,7 @@ class ReceivedScreen extends StatelessWidget {
         FsPrimaryButton(key: const Key('choose_app_button'), label: 'Choose app', icon: Icons.send_outlined, onPressed: onChooseApp),
         FsTextButton(key: const Key('discard_button'), label: 'Discard', destructive: true, onPressed: onDiscard),
         Text('The file is kept only until you share or discard it.', style: FsText.caption(context), textAlign: TextAlign.center),
+        if (trialRemaining != null) ...[const SizedBox(height: FsSpace.s4), TrialBadge(remaining: trialRemaining!)],
       ]),
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         const FsBadge(label: 'Verified'),
