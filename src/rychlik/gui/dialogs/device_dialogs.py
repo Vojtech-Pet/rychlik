@@ -7,14 +7,15 @@ Text is truthful: nothing is shown as sent/received/online unless the real servi
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QDialog, QStyle, QToolButton, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
 from rychlik.core.artifact import Artifact
 from rychlik.device.contracts import HandoffState
 from rychlik.device.desktop_devices import DeviceRow, DeviceState
+from rychlik.gui.qr_image import qr_image
 from rychlik.gui.device_mode import DeviceModeController, PairingSession, friendly_error, pairing_expiry_text, send_stage
 from rychlik.share.contracts import LinkShareRequest, ShareStatus
 from rychlik.share.share_link_service import ShareLinkService
@@ -52,9 +53,10 @@ def _muted(text: str = "") -> QLabel:
 class DeviceRowWidget(QWidget):
     """One device: state dot + name, real state text, and (for a changed identity) what to do next."""
 
-    def __init__(self, row: DeviceRow, parent=None, *, dimmed: bool = False) -> None:
+    def __init__(self, row: DeviceRow, parent=None, *, dimmed: bool = False, on_forget=None) -> None:
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        if on_forget is None:
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(10)
@@ -77,6 +79,15 @@ class DeviceRowWidget(QWidget):
         text.addWidget(self.state_label)
         layout.addWidget(dot)
         layout.addLayout(text, 1)
+        self.forget_button = None
+        if on_forget is not None and row.trusted:
+            self.forget_button = QToolButton()
+            self.forget_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+            self.forget_button.setToolTip("Forget this device")
+            self.forget_button.setAccessibleName(f"Forget {row.display_name}")
+            self.forget_button.setAutoRaise(True)
+            self.forget_button.clicked.connect(lambda: on_forget(row))
+            layout.addWidget(self.forget_button)
         if dimmed:
             self.setEnabled(False)
 
@@ -366,7 +377,11 @@ class PairDeviceDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.addWidget(_title("Pair a phone with Rýchlik"))
-        layout.addWidget(_muted("1. Open FriendSend on your phone (same Wi-Fi network).\n2. Choose “Paste code from Rýchlik”.\n3. Paste the pairing code below."))
+        layout.addWidget(_muted("1. Open FriendSend on your phone (same Wi-Fi network).\n2. Tap “Scan QR code” and point the camera at the code below.\n(Or copy the code and paste it in FriendSend.)"))
+        self.qr_label = QLabel()
+        self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.qr_label.setAccessibleName("Pairing QR code")
+        layout.addWidget(self.qr_label)
         self.code_box = QLineEdit()  # shows the start of the code; "Copy code" copies all of it
         self.code_box.setReadOnly(True)
         layout.addWidget(self.code_box)
@@ -404,6 +419,7 @@ class PairDeviceDialog(QDialog):
             return
         self.code_box.setText(self._session.code_text)
         self.code_box.setCursorPosition(0)
+        self.qr_label.setPixmap(QPixmap.fromImage(qr_image(self._session.code_text, scale=3)))
         self.copy_button.setEnabled(True)
         self.status_label.setText("Waiting for the phone…")
         self.tick()
@@ -421,6 +437,7 @@ class PairDeviceDialog(QDialog):
             self.paired_row = row
             self._timer.stop()
             self.code_box.clear()
+            self.qr_label.clear()
             self.status_label.setText(f"Paired with {row.display_name}.")
             self.expiry_label.setText("")
             self.copy_button.setEnabled(False)
@@ -429,6 +446,7 @@ class PairDeviceDialog(QDialog):
             return
         if session.seconds_left() <= 0:
             self.status_label.setText("This code expired.")
+            self.qr_label.clear()
             self.expiry_label.setText("")
             self.copy_button.setEnabled(False)
         else:
@@ -490,7 +508,7 @@ class DevicesPage(QWidget):
         for row in rows:
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, row.device_id)
-            widget = DeviceRowWidget(row)
+            widget = DeviceRowWidget(row, on_forget=self._forget_row)
             item.setSizeHint(widget.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, widget)
@@ -504,6 +522,10 @@ class DevicesPage(QWidget):
 
     def forget_selected(self) -> None:
         row = self.selected_row()
-        if row is not None and confirm_forget(row, self):
+        if row is not None:
+            self._forget_row(row)
+
+    def _forget_row(self, row: DeviceRow) -> None:
+        if confirm_forget(row, self):
             self._controller.forget_device(row.device_id)
             self.refresh()

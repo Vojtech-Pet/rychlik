@@ -57,6 +57,7 @@ dependencies:
   # Used directly (not just transitively via basic_utils) for the ASN.1
   # primitives in lib/security/self_signed_cert.dart.
   pointycastle: ^4.0.0
+  mobile_scanner: ^7.4.2
 
   # mDNS/DNS-SD advertisement on desktop-facing metadata (device_id,
   # protocol/security profile) is done via Android's native NsdManager

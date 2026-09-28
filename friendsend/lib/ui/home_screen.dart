@@ -9,6 +9,7 @@ import '../platform/share_targets.dart';
 import '../security/desktop_trust_store.dart';
 import '../security/secure_pairing_manager.dart';
 import 'screens/pairing_screen.dart';
+import 'screens/qr_scan_screen.dart';
 import 'screens/target_picker.dart';
 import 'screens/transfer_screens.dart';
 import 'screens/trusted_screen.dart';
@@ -24,7 +25,13 @@ class HomeScreen extends StatefulWidget {
     required this.controller,
     this.trustStore,
     this.targetProvider = const NoShareTargets(),
+    this.scannerBuilder = _defaultScanner,
   });
+
+  static Widget _defaultScanner(BuildContext context) => const QrScanScreen();
+
+  /// Builds the QR scanner route (replaced by a fake in widget tests, which have no camera).
+  final Widget Function(BuildContext) scannerBuilder;
 
   final DeviceIdentity identity;
   final SecurePairingManager pairingManager;
@@ -162,6 +169,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _scanAndPair() async {
+    final scanned = await Navigator.of(context).push<String>(MaterialPageRoute<String>(builder: (_) => widget.scannerBuilder(context)));
+    if (scanned == null || !mounted) return;
+    final problem = _validateCode(scanned.trim());
+    if (problem != null) {
+      widget.controller.pairingFailed(problem);
+      return;
+    }
+    await _completePairing(scanned.trim());
+  }
+
   Future<void> _completePairing(String code) async {
     widget.controller.beginPairing();
     try {
@@ -212,7 +230,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _screenFor(HandoffUiSnapshot s) {
     switch (s.state) {
       case AppState.unpaired:
-        return PairingScreen(onPair: _completePairing, error: s.pairingError, validate: _validateCode);
+        return PairingScreen(onPair: _completePairing, error: s.pairingError, validate: _validateCode, onScan: _scanAndPair);
       case AppState.pairing:
         return PairingScreen(onPair: _completePairing, busy: true);
       case AppState.ready:

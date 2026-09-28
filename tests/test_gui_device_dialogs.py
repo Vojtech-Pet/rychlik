@@ -130,6 +130,22 @@ def test_pair_dialog_shows_real_code_and_detects_completion(env, monkeypatch):
     dlg.reject()
 
 
+def test_pair_dialog_qr_decodes_to_exact_code(env):
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+    from rychlik.device.security.pairing_bootstrap import SecurePairingManager
+
+    c, *_ = env
+    c._pairing_factory = lambda ident, ts: SecurePairingManager(identity=ident, trust_store=ts, bind_host="127.0.0.1")
+    dlg = DD.PairDeviceDialog(c)
+    image = dlg.qr_label.pixmap().toImage().convertToFormat(dlg.qr_label.pixmap().toImage().Format.Format_Grayscale8)
+    ptr = image.constBits()
+    arr = np.frombuffer(ptr, dtype=np.uint8).reshape(image.height(), image.bytesPerLine())[:, : image.width()].copy()
+    decoded, _, _ = cv2.QRCodeDetectorAruco().detectAndDecode(arr)
+    assert decoded == dlg.code_box.text() == dlg._session.code_text
+    dlg.reject()
+
+
 def test_pair_dialog_expiry_disables_copy(env):
     from rychlik.device.security.pairing_bootstrap import SecurePairingManager
 
@@ -235,3 +251,20 @@ def test_completed_download_share_action_reaches_link_flow_end_to_end(env, qapp,
     finally:
         widget.shutdown()
         manager.stop()
+
+
+def test_devices_page_row_trash_button_forgets_only_that_device_after_confirmation(env, monkeypatch):
+    c, _, _, store, _ = env
+    store.upsert(_trusted("d1"))
+    store.upsert(_trusted("d2"))
+    page = DD.DevicesPage(c)
+    assert page.list.count() == 2
+    buttons = [page.list.itemWidget(page.list.item(i)).forget_button for i in range(2)]
+    assert all(b is not None for b in buttons)
+    monkeypatch.setattr(DD, "confirm_forget", lambda row, parent=None: False)
+    buttons[0].click()
+    assert store.get("d1") is not None and store.get("d2") is not None
+    target = page.list.item(0).data(Qt.ItemDataRole.UserRole)
+    monkeypatch.setattr(DD, "confirm_forget", lambda row, parent=None: True)
+    page.list.itemWidget(page.list.item(0)).forget_button.click()
+    assert store.get(target) is None and page.list.count() == 1

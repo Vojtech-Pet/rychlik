@@ -3,6 +3,8 @@
          real HTTP receiver server. No storage/contacts/phone/location
          permission is requested. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application
         android:label="friendsend"
         android:name="${applicationName}"

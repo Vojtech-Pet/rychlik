@@ -5,7 +5,10 @@ import '../theme/fs_theme.dart';
 import '../widgets.dart';
 
 class PairingScreen extends StatefulWidget {
-  const PairingScreen({super.key, required this.onPair, this.error, this.busy = false, this.validate});
+  const PairingScreen({super.key, required this.onPair, this.error, this.busy = false, this.validate, this.onScan});
+
+  /// Opens the camera QR scanner; the scanned text goes through the same validation as a pasted code.
+  final VoidCallback? onScan;
 
   final void Function(String code) onPair;
 
@@ -70,11 +73,15 @@ class _PairingScreenState extends State<PairingScreen> {
             child: Column(children: const [
               _Step(1, 'On your computer, open Rýchlik › Devices › Pair FriendSend.'),
               SizedBox(height: FsSpace.s12),
-              _Step(2, 'Copy the pairing code.'),
+              _Step(2, 'Tap Scan QR code and point the camera at the code.'),
               SizedBox(height: FsSpace.s12),
-              _Step(3, 'Paste it here.'),
+              _Step(3, 'No camera? Copy the code and paste it below.'),
             ]),
           ),
+          if (widget.onScan != null) ...[
+            const SizedBox(height: FsSpace.s16),
+            FsPrimaryButton(key: const Key('pairing_scan_button'), label: 'Scan QR code', onPressed: widget.onScan),
+          ],
           const SizedBox(height: FsSpace.s16),
           Container(
             padding: const EdgeInsets.fromLTRB(FsSpace.s16, FsSpace.s12, FsSpace.s12, FsSpace.s12),

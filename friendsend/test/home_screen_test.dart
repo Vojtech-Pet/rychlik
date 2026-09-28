@@ -88,6 +88,7 @@ Future<void> _pumpHome(
   WidgetTester tester, {
   required HandoffController controller,
   required SecurePairingManager pairingManager,
+  Widget Function(BuildContext)? scanner,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -96,9 +97,19 @@ Future<void> _pumpHome(
         identity: const DeviceIdentity(deviceId: 'd1', displayName: 'Test Phone'),
         pairingManager: pairingManager,
         controller: controller,
+        scannerBuilder: scanner ?? (_) => const SizedBox(),
       ),
     ),
   );
+}
+
+class _FakeScanner extends StatelessWidget {
+  const _FakeScanner(this.result);
+  final String? result;
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: Center(child: ElevatedButton(key: const Key('fake_scan_result'), onPressed: () => Navigator.of(context).pop(result), child: const Text('scan'))),
+      );
 }
 
 void main() {
@@ -217,6 +228,27 @@ void main() {
 
     expect(find.byKey(const Key('ready_message')), findsOneWidget);
     expect(find.text('Ready to receive'), findsOneWidget);
+  });
+
+  testWidgets('Scan QR button opens the scanner; a non-pairing QR is rejected with a bounded error', (tester) async {
+    await _pumpHome(tester, controller: controller, pairingManager: pairingManager, scanner: (_) => const _FakeScanner('https://www.facebook.com/share/v/1AbCdEf/'));
+    await tester.tap(find.byKey(const Key('pairing_scan_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('fake_scan_result')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('pairing_progress')), findsNothing);
+    expect(find.text('This does not look like a pairing code.'), findsOneWidget);
+    expect(controller.current.state, AppState.unpaired);
+  });
+
+  testWidgets('leaving the scanner without a code changes nothing', (tester) async {
+    await _pumpHome(tester, controller: controller, pairingManager: pairingManager, scanner: (_) => const _FakeScanner(null));
+    await tester.tap(find.byKey(const Key('pairing_scan_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('fake_scan_result')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('pairing_error')), findsNothing);
+    expect(controller.current.state, AppState.unpaired);
   });
 
   testWidgets('expired pairing payload shows a bounded error (§19)', (tester) async {
