@@ -3,6 +3,7 @@ package app.friendsend.friendsend
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Context
+import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
 import android.net.nsd.NsdManager
@@ -26,6 +27,7 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     private val shareChannelName = "app.friendsend/share"
     private val mdnsChannelName = "app.friendsend/mdns"
+    private val incomingChannelName = "app.friendsend/incoming"
 
     // Prompt A14 §54: must match the authority declared in AndroidManifest.xml
     // and the <cache-path> declared in res/xml/file_paths.xml.
@@ -35,6 +37,30 @@ class MainActivity : FlutterActivity() {
     private var nsdManager: NsdManager? = null
     private var registrationListener: NsdManager.RegistrationListener? = null
     private val shareTargetResolver by lazy { ShareTargetResolver(this) }
+
+    // Text another app shared to FriendSend (ACTION_SEND text/plain). Kept until Dart takes it, so a cold start
+    // (Dart not listening yet) never loses it; delivered announced through the incoming channel when Dart is running (Dart pulls it once).
+    private var pendingShareText: String? = null
+    private var incomingChannel: MethodChannel? = null
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        captureIncomingShare(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (captureIncomingShare(intent)) incomingChannel?.invokeMethod("incomingAvailable", null) // Dart then pulls it once
+    }
+
+    private fun captureIncomingShare(source: Intent?): Boolean {
+        if (source == null) return false
+        val text = IncomingShare.extractText(source.action, source.type, source.getCharSequenceExtra(Intent.EXTRA_TEXT)) ?: return false
+        pendingShareText = text
+        source.action = null // consumed: a recreated activity must not process the same share again
+        return true
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -57,6 +83,8 @@ class MainActivity : FlutterActivity() {
                         runOnUiThread { result.success(targets) }
                     }.start()
                 }
+                "shareTextToTarget" -> result.success(handleShareTextToTarget(call.argument<String>("text"), call.argument<String>("targetId")))
+                "shareText" -> result.success(handleShareText(call.argument<String>("text")))
                 "shareToTarget" -> {
                     val path = call.argument<String>("path")
                     val displayName = call.argument<String>("displayName") ?: "shared_file"
@@ -64,6 +92,17 @@ class MainActivity : FlutterActivity() {
                     result.success(handleShareToTarget(path, displayName, mimeType, call.argument<String>("targetId")))
                 }
                 else -> result.notImplemented()
+            }
+        }
+        incomingChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, incomingChannelName).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "takeIncomingText" -> {
+                        result.success(pendingShareText)
+                        pendingShareText = null
+                    }
+                    else -> result.notImplemented()
+                }
             }
         }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, mdnsChannelName).setMethodCallHandler { call, result ->
@@ -187,6 +226,46 @@ class MainActivity : FlutterActivity() {
             "TARGET_OPENED"
         } catch (_: ActivityNotFoundException) {
             "TARGET_UNAVAILABLE"
+        } catch (_: Exception) {
+            "PLATFORM_ERROR"
+        }
+    }
+
+    /** Targeted ACTION_SEND text/plain: the text goes to the chosen app byte for byte; nothing else is added. */
+    private fun handleShareTextToTarget(text: String?, targetId: String?): String {
+        val component = parseComponentId(targetId) ?: return "TARGET_UNAVAILABLE"
+        if (text.isNullOrEmpty()) return "PLATFORM_ERROR"
+        if (!shareTargetResolver.isStillAvailable("text/plain", component.first, component.second)) return "TARGET_UNAVAILABLE"
+        return try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+                setComponent(shareTargetResolver.component(component.first, component.second))
+            }
+            startActivity(intent)
+            "TARGET_OPENED"
+        } catch (_: ActivityNotFoundException) {
+            "TARGET_UNAVAILABLE"
+        } catch (_: Exception) {
+            "PLATFORM_ERROR"
+        }
+    }
+
+    /** The Android Sharesheet for the same text, with FriendSend itself excluded so it cannot loop back here. */
+    private fun handleShareText(text: String?): String {
+        if (text.isNullOrEmpty()) return "PLATFORM_ERROR"
+        return try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            val chooser = Intent.createChooser(intent, "Share with…").apply {
+                putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(ComponentName(this@MainActivity, MainActivity::class.java)))
+            }
+            if (chooser.resolveActivity(packageManager) == null) "NO_SHARE_TARGET" else {
+                startActivity(chooser)
+                "SHARE_SHEET_OPENED"
+            }
         } catch (_: Exception) {
             "PLATFORM_ERROR"
         }

@@ -19,13 +19,14 @@ class PickerResult {
 /// "Where do you want to send it?" bottom sheet. Quick targets come from the platform resolver; the separate
 /// "More apps… / Open Android Sharesheet" row is always present and never replaced by the custom list.
 class TargetPickerSheet extends StatelessWidget {
-  const TargetPickerSheet({super.key, required this.fileName, required this.sizeBytes, required this.mimeType, required this.targets, this.loading = false});
+  const TargetPickerSheet({super.key, required this.fileName, required this.sizeBytes, required this.mimeType, required this.targets, this.loading = false, this.allowDiscard = true});
 
   final String fileName;
-  final int sizeBytes;
+  final int? sizeBytes; // null for shared text: no size is shown
   final String? mimeType;
   final List<ShareTarget> targets;
   final bool loading;
+  final bool allowDiscard;
 
   @override
   Widget build(BuildContext context) {
@@ -41,7 +42,7 @@ class TargetPickerSheet extends StatelessWidget {
           Row(children: [
             FsFileTile(kind: fileKindOf(mimeType), size: 36),
             const SizedBox(width: FsSpace.s12),
-            Expanded(child: Text('$fileName · ${formatBytes(sizeBytes)}', style: FsText.body(context), maxLines: 1, overflow: TextOverflow.ellipsis)),
+            Expanded(child: Text(sizeBytes == null ? fileName : '$fileName · ${formatBytes(sizeBytes!)}', style: FsText.body(context), maxLines: 1, overflow: TextOverflow.ellipsis)),
           ]),
           const SizedBox(height: FsSpace.s16),
           if (loading)
@@ -49,7 +50,7 @@ class TargetPickerSheet extends StatelessWidget {
           else if (targets.isEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: FsSpace.s12),
-              child: Text('No apps were found for this file. Use the Android Sharesheet below.', key: const Key('picker_no_targets'), style: FsText.muted(context)),
+              child: Text(mimeType == 'text/plain' ? 'No apps were found. Use the Android Sharesheet below.' : 'No apps were found for this file. Use the Android Sharesheet below.', key: const Key('picker_no_targets'), style: FsText.muted(context)),
             )
           else
             _Grid(targets: targets),
@@ -75,7 +76,7 @@ class TargetPickerSheet extends StatelessWidget {
           ),
           const SizedBox(height: FsSpace.s8),
           Center(child: Text('Pick an app, then choose the person inside that app.', style: FsText.caption(context), textAlign: TextAlign.center)),
-          Center(child: FsTextButton(key: const Key('picker_discard'), label: 'Discard', destructive: true, onPressed: () => Navigator.of(context).pop(const PickerResult.discard()))),
+          if (allowDiscard) Center(child: FsTextButton(key: const Key('picker_discard'), label: 'Discard', destructive: true, onPressed: () => Navigator.of(context).pop(const PickerResult.discard()))),
         ]),
       ),
     );

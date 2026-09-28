@@ -13,7 +13,14 @@ enum ShareResult { opened, noShareTarget, invalidTempFile, platformError }
 /// Result of a targeted ACTION_SEND. `opened` means only that Android accepted the launch.
 enum TargetShareResult { opened, targetUnavailable, invalidTempFile, platformError }
 
-class ShareBridge {
+/// What the incoming-share screen needs from the platform (the production ShareBridge, or a test double).
+abstract class TextSharer {
+  Future<TargetShareResult> shareTextToTarget({required String text, required String targetId});
+
+  Future<ShareResult> shareText(String text);
+}
+
+class ShareBridge implements TextSharer {
   ShareBridge({MethodChannel? channel}) : _channel = channel ?? const MethodChannel('app.friendsend/share');
 
   final MethodChannel _channel;
@@ -64,6 +71,46 @@ class ShareBridge {
       return const [];
     } on PlatformException {
       return const [];
+    }
+  }
+
+  /// Targeted ACTION_SEND of plain text (a shared link) to one app chosen from the picker.
+  @override
+  Future<TargetShareResult> shareTextToTarget({required String text, required String targetId}) async {
+    try {
+      final result = await _channel.invokeMethod<String>('shareTextToTarget', {'text': text, 'targetId': targetId});
+      switch (result) {
+        case 'TARGET_OPENED':
+          return TargetShareResult.opened;
+        case 'TARGET_UNAVAILABLE':
+          return TargetShareResult.targetUnavailable;
+        default:
+          return TargetShareResult.platformError;
+      }
+    } on MissingPluginException {
+      return TargetShareResult.platformError;
+    } on PlatformException {
+      return TargetShareResult.platformError;
+    }
+  }
+
+  /// The Android Sharesheet for the text (FriendSend itself excluded natively).
+  @override
+  Future<ShareResult> shareText(String text) async {
+    try {
+      final result = await _channel.invokeMethod<String>('shareText', {'text': text});
+      switch (result) {
+        case 'SHARE_SHEET_OPENED':
+          return ShareResult.opened;
+        case 'NO_SHARE_TARGET':
+          return ShareResult.noShareTarget;
+        default:
+          return ShareResult.platformError;
+      }
+    } on MissingPluginException {
+      return ShareResult.platformError;
+    } on PlatformException {
+      return ShareResult.platformError;
     }
   }
 

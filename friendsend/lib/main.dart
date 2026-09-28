@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'handoff/handoff_controller.dart';
 import 'identity/device_identity.dart';
+import 'platform/incoming_share.dart';
 import 'platform/lan_address.dart';
 import 'platform/share_bridge.dart';
 import 'platform/share_targets.dart';
@@ -76,7 +77,15 @@ Future<void> main() async {
   await controller.runStartupCleanup();
   controller.startPeriodicCleanup();
 
-  runApp(FriendSendApp(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore, targetProvider: PlatformShareTargetProvider(shareBridge)));
+  runApp(FriendSendApp(
+    identity: identity,
+    pairingManager: pairingManager,
+    controller: controller,
+    trustStore: trustStore,
+    targetProvider: PlatformShareTargetProvider(shareBridge),
+    incomingShares: PlatformIncomingShares(),
+    textSharer: shareBridge,
+  ));
 }
 
 class FriendSendApp extends StatelessWidget {
@@ -87,6 +96,8 @@ class FriendSendApp extends StatelessWidget {
     required this.controller,
     this.trustStore,
     this.targetProvider = const NoShareTargets(),
+    this.incomingShares = const NoIncomingShares(),
+    this.textSharer,
   });
 
   final DeviceIdentity identity;
@@ -94,6 +105,8 @@ class FriendSendApp extends StatelessWidget {
   final HandoffController controller;
   final DesktopTrustStore? trustStore;
   final ShareTargetProvider targetProvider;
+  final IncomingShareSource incomingShares;
+  final TextSharer? textSharer;
 
   @override
   Widget build(BuildContext context) {
@@ -102,7 +115,7 @@ class FriendSendApp extends StatelessWidget {
       theme: FsTheme.build(Brightness.light),
       darkTheme: FsTheme.build(Brightness.dark),
       themeMode: ThemeMode.system,
-      home: HomeScreen(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore, targetProvider: targetProvider),
+      home: HomeScreen(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore, targetProvider: targetProvider, incomingShares: incomingShares, textSharer: textSharer),
     );
   }
 }
