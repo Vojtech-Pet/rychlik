@@ -98,6 +98,7 @@ class MediaAcquisition:
             "noplaylist": True,
             "progress_hooks": [hook],
             "quiet": True,
+            "noprogress": True,
             "no_warnings": True,
             "match_filter": reject_non_media,
             "continuedl": True,
