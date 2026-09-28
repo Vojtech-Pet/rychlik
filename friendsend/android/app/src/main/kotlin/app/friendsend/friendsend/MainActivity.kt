@@ -148,6 +148,7 @@ class MainActivity : FlutterActivity() {
                         }.start()
                     }
                 }
+                "saveVideo" -> result.success(saveVideoToGallery(call.argument<String>("path"), call.argument<String>("displayName"), call.argument<String>("mimeType")))
                 "cancelVideoDownload" -> {
                     videoDownloader.cancel()
                     result.success(null)
@@ -278,6 +279,35 @@ class MainActivity : FlutterActivity() {
             "TARGET_UNAVAILABLE"
         } catch (_: Exception) {
             "PLATFORM_ERROR"
+        }
+    }
+
+    /**
+     * Copies a downloaded video (only from FriendSend's private video cache) into the shared Movies/FriendSend folder
+     * through MediaStore, so it shows up in the Gallery. Android 10+ needs no storage permission for this.
+     */
+    private fun saveVideoToGallery(path: String?, displayName: String?, mimeType: String?): String {
+        if (android.os.Build.VERSION.SDK_INT < 29) return "UNSUPPORTED"
+        if (path.isNullOrEmpty()) return "FAILED"
+        val source = try { File(path).canonicalFile } catch (_: Exception) { return "FAILED" }
+        val allowedRoot = videoDownloader.directory.canonicalFile
+        if (!source.path.startsWith(allowedRoot.path + File.separator) || !source.isFile) return "FAILED"
+        val name = sanitizeShareDisplayName(displayName ?: source.name, mimeType ?: "video/mp4")
+        val resolver = contentResolver
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, name)
+            put(android.provider.MediaStore.Video.Media.MIME_TYPE, mimeType ?: "video/mp4")
+            put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "Movies/FriendSend")
+            put(android.provider.MediaStore.Video.Media.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: return "FAILED"
+        return try {
+            resolver.openOutputStream(uri)!!.use { out -> source.inputStream().use { it.copyTo(out) } }
+            resolver.update(uri, android.content.ContentValues().apply { put(android.provider.MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
+            "SAVED"
+        } catch (_: Exception) {
+            try { resolver.delete(uri, null, null) } catch (_: Exception) {}
+            "FAILED"
         }
     }
 

@@ -33,12 +33,17 @@ class VideoOutcome {
   final String? message;
 }
 
+enum SaveOutcome { saved, unsupported, failed }
+
 abstract class VideoFetcher {
   Stream<VideoProgress> get progress;
 
   Future<VideoOutcome> download(String url);
 
   Future<void> cancel();
+
+  /// Copies the downloaded video into the phone's Movies/FriendSend folder (Gallery).
+  Future<SaveOutcome> saveToPhone(DownloadedVideo video);
 }
 
 /// Production fetcher: yt-dlp running inside the app (Chaquopy), reached through a narrow method channel.
@@ -77,6 +82,25 @@ class PlatformVideoFetcher implements VideoFetcher {
       return const VideoOutcome.failed('Video download is not available here.');
     } on PlatformException {
       return const VideoOutcome.failed('The video could not be downloaded.');
+    }
+  }
+
+  @override
+  Future<SaveOutcome> saveToPhone(DownloadedVideo video) async {
+    try {
+      final result = await _channel.invokeMethod<String>('saveVideo', {'path': video.path, 'displayName': video.displayName, 'mimeType': video.mimeType});
+      switch (result) {
+        case 'SAVED':
+          return SaveOutcome.saved;
+        case 'UNSUPPORTED':
+          return SaveOutcome.unsupported;
+        default:
+          return SaveOutcome.failed;
+      }
+    } on MissingPluginException {
+      return SaveOutcome.failed;
+    } on PlatformException {
+      return SaveOutcome.failed;
     }
   }
 

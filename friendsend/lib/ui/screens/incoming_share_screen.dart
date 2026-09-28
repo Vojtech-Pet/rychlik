@@ -11,13 +11,15 @@ enum IncomingVideoPhase { idle, downloading, ready, failed }
 
 /// What the screen shows about the optional "send the video itself" path.
 class IncomingVideoUi {
-  const IncomingVideoUi({this.available = false, this.phase = IncomingVideoPhase.idle, this.progress, this.video, this.error});
+  const IncomingVideoUi({this.available = false, this.phase = IncomingVideoPhase.idle, this.progress, this.video, this.error, this.saveNote, this.saving = false});
 
   final bool available; // a video fetcher exists and the shared text is a link
   final IncomingVideoPhase phase;
   final VideoProgress? progress;
   final DownloadedVideo? video;
   final String? error;
+  final String? saveNote; // result of "Save to phone" (shown under the button); null until tried
+  final bool saving;
 }
 
 /// Shown when another app shares text (usually a link) to FriendSend. Works without pairing: the installed apps
@@ -34,6 +36,7 @@ class IncomingShareScreen extends StatelessWidget {
     this.onSendVideo,
     this.onCancelVideo,
     this.onBackToLink,
+    this.onSaveVideo,
   });
 
   final String text;
@@ -45,6 +48,7 @@ class IncomingShareScreen extends StatelessWidget {
   final VoidCallback? onSendVideo;
   final VoidCallback? onCancelVideo;
   final VoidCallback? onBackToLink;
+  final VoidCallback? onSaveVideo;
 
   static bool looksLikeLink(String text) {
     final t = text.trim();
@@ -140,7 +144,11 @@ class IncomingShareScreen extends StatelessWidget {
               Expanded(child: Text('${v.displayName} · ${formatBytes(v.size)}', maxLines: 2, overflow: TextOverflow.ellipsis, style: FsText.body(context))),
             ]),
           ),
-          FsTextButton(key: const Key('incoming_back_to_link'), label: 'Send the link instead', onPressed: onBackToLink),
+          Wrap(alignment: WrapAlignment.spaceBetween, crossAxisAlignment: WrapCrossAlignment.center, children: [
+            FsTextButton(key: const Key('incoming_save_video'), label: video.saving ? 'Saving…' : 'Save to phone', onPressed: video.saving || video.saveNote == 'Saved to Movies/FriendSend' ? null : onSaveVideo),
+            FsTextButton(key: const Key('incoming_back_to_link'), label: 'Send the link instead', onPressed: onBackToLink),
+          ]),
+          if (video.saveNote != null) Text(video.saveNote!, key: const Key('incoming_save_note'), style: FsText.caption(context)),
         ];
     }
   }

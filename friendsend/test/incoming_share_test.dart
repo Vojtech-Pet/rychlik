@@ -82,12 +82,20 @@ class _Fetcher implements VideoFetcher {
   Completer<VideoOutcome>? pending;
   final urls = <String>[];
   int cancels = 0;
+  final saved = <String>[];
+  SaveOutcome saveOutcome = SaveOutcome.saved;
   @override
   Stream<VideoProgress> get progress => _progress.stream;
   @override
   Future<VideoOutcome> download(String url) {
     urls.add(url);
     return (pending = Completer<VideoOutcome>()).future;
+  }
+
+  @override
+  Future<SaveOutcome> saveToPhone(DownloadedVideo video) async {
+    saved.add(video.path);
+    return saveOutcome;
   }
 
   @override
@@ -177,6 +185,17 @@ void main() {
       expect(failed.message, 'No video in this post');
       reply((c) => throw PlatformException(code: 'x'));
       expect((await fetcher.download('https://x.com/a')).kind, VideoOutcomeKind.failed);
+    });
+
+    test('saveToPhone maps the platform result and never throws', () async {
+      final fetcher = PlatformVideoFetcher(channel: channel);
+      const v = DownloadedVideo(path: '/p.mp4', displayName: 'A.mp4', mimeType: 'video/mp4', size: 1);
+      for (final (raw, expected) in [('SAVED', SaveOutcome.saved), ('UNSUPPORTED', SaveOutcome.unsupported), ('FAILED', SaveOutcome.failed), ('???', SaveOutcome.failed)]) {
+        reply((c) => raw);
+        expect(await fetcher.saveToPhone(v), expected);
+      }
+      reply((c) => throw PlatformException(code: 'x'));
+      expect(await fetcher.saveToPhone(v), SaveOutcome.failed);
     });
 
     test('progress events from the platform reach the stream', () async {
@@ -428,6 +447,33 @@ void main() {
       await t.pumpAndSettle();
       expect(sharer.targetCalls.length, 1);
       expect(sharer.fileCalls, isEmpty);
+    });
+
+    testWidgets('Save to phone copies the downloaded video once and says so; failures and old Android are explained', (t) async {
+      final fetcher = _Fetcher();
+      await pump(t, _Source(_facebook), fetcher: fetcher);
+      await t.pump();
+      expect(find.byKey(const Key('incoming_save_video')), findsNothing); // only once a video exists
+      fetcher.pending!.complete(const VideoOutcome.done(_video));
+      await t.pumpAndSettle();
+      fetcher.saveOutcome = SaveOutcome.failed;
+      await t.tap(find.byKey(const Key('incoming_save_video')));
+      await t.pumpAndSettle();
+      expect(find.text('Couldn’t save the video.'), findsOneWidget);
+      fetcher.saveOutcome = SaveOutcome.unsupported;
+      await t.tap(find.byKey(const Key('incoming_save_video')));
+      await t.pumpAndSettle();
+      expect(find.text('Saving needs Android 10 or newer.'), findsOneWidget);
+      fetcher.saveOutcome = SaveOutcome.saved;
+      await t.tap(find.byKey(const Key('incoming_save_video')));
+      await t.pumpAndSettle();
+      expect(find.text('Saved to Movies/FriendSend'), findsOneWidget);
+      expect(fetcher.saved, ['/cache/friendsend/video/abc.mp4', '/cache/friendsend/video/abc.mp4', '/cache/friendsend/video/abc.mp4']);
+      expect(t.widget<TextButton>(find.descendant(of: find.byKey(const Key('incoming_save_video')), matching: find.byType(TextButton))).onPressed, isNull); // saved: no duplicate
+      // sending to an app still works afterwards
+      await t.tap(find.byKey(const Key('target_com.fb.orca/.Send')));
+      await t.pumpAndSettle();
+      expect(sharer.fileCalls.length, 1);
     });
 
     testWidgets('closing the share screen while downloading cancels the download', (t) async {

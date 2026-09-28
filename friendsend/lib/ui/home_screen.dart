@@ -71,6 +71,8 @@ class _HomeScreenState extends State<HomeScreen> {
   DownloadedVideo? _video;
   String? _videoError;
   StreamSubscription<VideoProgress>? _videoSub;
+  String? _saveNote;
+  bool _saving = false;
   int _videoRun = 0; // identifies the current download so a late result of a cancelled/replaced one is ignored
 
   @override
@@ -199,6 +201,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _video = null;
       _videoProgress = null;
       _videoError = null;
+      _saveNote = null;
+      _saving = false;
     });
     // A shared link starts fetching its video in the background right away; no extra tap.
     if (widget.videoFetcher != null && IncomingShareScreen.looksLikeLink(text)) _sendVideo();
@@ -228,6 +232,24 @@ class _HomeScreenState extends State<HomeScreen> {
           _videoPhase = IncomingVideoPhase.failed;
           _videoError = outcome.message ?? 'The video could not be downloaded.';
       }
+    });
+  }
+
+  Future<void> _saveVideo() async {
+    final video = _video;
+    final fetcher = widget.videoFetcher;
+    if (video == null || fetcher == null || _saving) return;
+    final run = _videoRun;
+    setState(() => _saving = true);
+    final outcome = await fetcher.saveToPhone(video);
+    if (!mounted || run != _videoRun) return;
+    setState(() {
+      _saving = false;
+      _saveNote = switch (outcome) {
+        SaveOutcome.saved => 'Saved to Movies/FriendSend',
+        SaveOutcome.unsupported => 'Saving needs Android 10 or newer.',
+        SaveOutcome.failed => 'Couldn’t save the video.',
+      };
     });
   }
 
@@ -378,12 +400,16 @@ class _HomeScreenState extends State<HomeScreen> {
           progress: _videoProgress,
           video: _video,
           error: _videoError,
+          saveNote: _saveNote,
+          saving: _saving,
         ),
+        onSaveVideo: _saveVideo,
         onSendVideo: _sendVideo,
         onCancelVideo: _cancelVideo,
         onBackToLink: () => setState(() {
           _videoPhase = IncomingVideoPhase.idle;
           _video = null;
+          _saveNote = null;
           _incomingTargets = _loadTextTargets();
         }),
       );
