@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Rýchlik",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "Odošle odkazy do aplikácie Rýchlik pre Linux.",
   "icons": {
     "48": "icon.svg",
@@ -26,7 +26,7 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "rychlik-desktop@rychlik.app",
+      "id": "rychlik-desktop-app@rychlik.app",
       "strict_min_version": "140.0",
       "data_collection_permissions": {
         "required": ["none"]
