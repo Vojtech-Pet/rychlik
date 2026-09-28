@@ -65,6 +65,13 @@ abstract class EntitlementSource {
   /// Re-runs verification for whatever purchase is on record (grace-period retry); a no-op if there is none.
   Future<EntitlementStatus> retryPendingVerification({required PurchaseVerifier verifier});
 
+  /// Periodic re-check of an already-[EntitlementState.fullVerified] purchase (a no-op if it isn't due yet, or if
+  /// the state isn't fullVerified at all). A refund/chargeback/revoked purchase surfaces as
+  /// [VerificationResult.rejected] here and revokes access -- FULL is never permanent regardless of what the
+  /// original purchase callback said. A [VerificationResult.temporaryFailure] never revokes (our backend being
+  /// briefly unreachable must not punish a real purchase); it is retried again the next time this is called.
+  Future<EntitlementStatus> reverifyIfDue({required PurchaseVerifier verifier});
+
   /// "Restore purchases": `record` is whatever the billing client found owned for this account (or null for
   /// nothing owned, which leaves the current state -- including any trial credit -- untouched).
   Future<EntitlementStatus> restoreFrom(PurchaseRecord? record, {required PurchaseVerifier verifier});
@@ -98,19 +105,23 @@ class AlwaysUnlockedEntitlement implements EntitlementSource {
   Future<EntitlementStatus> retryPendingVerification({required PurchaseVerifier verifier}) async => status();
 
   @override
+  Future<EntitlementStatus> reverifyIfDue({required PurchaseVerifier verifier}) async => status();
+
+  @override
   Future<EntitlementStatus> restoreFrom(PurchaseRecord? record, {required PurchaseVerifier verifier}) async => status();
 }
 
 /// Internal on-disk record: everything [EntitlementStatus] is projected from, plus what a purchase needs to be
 /// re-verified or restored later.
 class _Record {
-  const _Record({required this.state, required this.sendsUsed, this.productId, this.purchaseToken, this.unverifiedSince});
+  const _Record({required this.state, required this.sendsUsed, this.productId, this.purchaseToken, this.unverifiedSince, this.lastReverifiedAt});
 
   final EntitlementState state;
   final int sendsUsed;
   final String? productId;
   final String? purchaseToken;
   final DateTime? unverifiedSince;
+  final DateTime? lastReverifiedAt;
 
   bool get isUnlimited => state == EntitlementState.fullVerified || state == EntitlementState.fullUnverified;
 
@@ -120,6 +131,7 @@ class _Record {
     Object? productId = _unset,
     Object? purchaseToken = _unset,
     Object? unverifiedSince = _unset,
+    Object? lastReverifiedAt = _unset,
   }) =>
       _Record(
         state: state ?? this.state,
@@ -127,6 +139,7 @@ class _Record {
         productId: identical(productId, _unset) ? this.productId : productId as String?,
         purchaseToken: identical(purchaseToken, _unset) ? this.purchaseToken : purchaseToken as String?,
         unverifiedSince: identical(unverifiedSince, _unset) ? this.unverifiedSince : unverifiedSince as DateTime?,
+        lastReverifiedAt: identical(lastReverifiedAt, _unset) ? this.lastReverifiedAt : lastReverifiedAt as DateTime?,
       );
 
   static const Object _unset = Object();
@@ -135,15 +148,17 @@ class _Record {
 /// Persistent (survives app and phone restarts): a small JSON file in the app's own support directory.
 /// `sendsUsed`, not "remaining", is what's stored, so a future change to the trial size never corrupts old data.
 class EntitlementService implements EntitlementSource {
-  EntitlementService(Directory supportDir, {this.trialSends = defaultTrialSends, Duration? unverifiedGracePeriod, DateTime Function()? clock})
+  EntitlementService(Directory supportDir, {this.trialSends = defaultTrialSends, Duration? unverifiedGracePeriod, Duration? reverifyInterval, DateTime Function()? clock})
       : _file = File('${supportDir.path}/entitlement.json'),
         unverifiedGracePeriod = unverifiedGracePeriod ?? const Duration(days: 3),
+        reverifyInterval = reverifyInterval ?? const Duration(days: 7),
         _now = clock ?? DateTime.now;
 
   static const int defaultTrialSends = 5;
 
   final int trialSends;
   final Duration unverifiedGracePeriod;
+  final Duration reverifyInterval;
   final DateTime Function() _now;
   final File _file;
   final StreamController<EntitlementStatus> _controller = StreamController<EntitlementStatus>.broadcast();
@@ -184,12 +199,14 @@ class EntitlementService implements EntitlementSource {
         final state = EntitlementState.values.asNameMap()[data['state']] ?? EntitlementState.trial;
         final used = ((data['successfulSends'] as num?)?.toInt() ?? 0).clamp(0, trialSends);
         final unverifiedMs = (data['unverifiedSinceEpochMs'] as num?)?.toInt();
+        final reverifiedMs = (data['lastReverifiedAtEpochMs'] as num?)?.toInt();
         return _Record(
           state: state,
           sendsUsed: used,
           productId: data['productId'] as String?,
           purchaseToken: data['purchaseToken'] as String?,
           unverifiedSince: unverifiedMs == null ? null : DateTime.fromMillisecondsSinceEpoch(unverifiedMs),
+          lastReverifiedAt: reverifiedMs == null ? null : DateTime.fromMillisecondsSinceEpoch(reverifiedMs),
         );
       }
       // Pre-hardening schema (v1: {"unlocked": bool, "successfulSends": int}). A previously unlocked install is
@@ -211,6 +228,7 @@ class EntitlementService implements EntitlementSource {
       if (r.productId != null) 'productId': r.productId,
       if (r.purchaseToken != null) 'purchaseToken': r.purchaseToken,
       if (r.unverifiedSince != null) 'unverifiedSinceEpochMs': r.unverifiedSince!.millisecondsSinceEpoch,
+      if (r.lastReverifiedAt != null) 'lastReverifiedAtEpochMs': r.lastReverifiedAt!.millisecondsSinceEpoch,
     }));
     await tmp.rename(_file.path);
     _controller.add(_project(r));
@@ -254,10 +272,34 @@ class EntitlementService implements EntitlementSource {
     return applyPurchase(productId: record.productId, purchaseToken: record.purchaseToken, verifier: verifier);
   }
 
+  @override
+  Future<EntitlementStatus> reverifyIfDue({required PurchaseVerifier verifier}) async {
+    final current = await _currentWithGraceApplied();
+    if (current.state != EntitlementState.fullVerified) return _project(current);
+    if (current.lastReverifiedAt != null && _now().difference(current.lastReverifiedAt!) < reverifyInterval) {
+      return _project(current); // checked recently enough
+    }
+    if (current.productId == null || current.purchaseToken == null) return _project(current); // nothing to re-check
+    final result = await verifier.verify(productId: current.productId!, purchaseToken: current.purchaseToken!);
+    switch (result) {
+      case VerificationResult.verified:
+        final next = current.copyWith(lastReverifiedAt: _now());
+        await _persist(next);
+        return _project(next);
+      case VerificationResult.rejected:
+        // A refund/chargeback/revoke: FULL must never be permanent regardless of the original purchase callback.
+        final next = current.copyWith(state: EntitlementState.trial, productId: null, purchaseToken: null, lastReverifiedAt: null);
+        await _persist(next);
+        return _project(next);
+      case VerificationResult.temporaryFailure:
+        return _project(current); // our backend hiccup; do not touch lastReverifiedAt so the next call retries
+    }
+  }
+
   Future<EntitlementStatus> _verifyAndSettle(_Record pending, PurchaseVerifier verifier) async {
     final result = await verifier.verify(productId: pending.productId!, purchaseToken: pending.purchaseToken!);
     final next = switch (result) {
-      VerificationResult.verified => pending.copyWith(state: EntitlementState.fullVerified, unverifiedSince: null),
+      VerificationResult.verified => pending.copyWith(state: EntitlementState.fullVerified, unverifiedSince: null, lastReverifiedAt: _now()),
       VerificationResult.rejected => pending.copyWith(state: EntitlementState.trial, productId: null, purchaseToken: null, unverifiedSince: null),
       VerificationResult.temporaryFailure => pending.copyWith(state: EntitlementState.fullUnverified, unverifiedSince: _now()),
     };

@@ -93,6 +93,9 @@ Future<void> main() async {
     (record) => entitlementService.restoreFrom(record, verifier: verifier),
     onError: (_) {},
   ));
+  // Periodic re-check of an already-unlocked purchase (refunds/chargebacks must not stay permanently FULL);
+  // reverifyIfDue is itself a no-op unless it is actually due, so calling it on every launch is cheap.
+  unawaited(entitlementService.reverifyIfDue(verifier: verifier).catchError((_) => EntitlementStatus.initial));
 
   runApp(FriendSendApp(
     identity: identity,

@@ -104,6 +104,59 @@ void main() {
     });
   });
 
+  group('B1b: periodic re-verification (refund / revoke must not stay permanently FULL)', () {
+    test('a fullVerified purchase that is later rejected on re-check is revoked, not left FULL', () async {
+      final verifier = _Verifier(VerificationResult.verified);
+      final service = EntitlementService(root, reverifyInterval: Duration.zero);
+      for (var i = 0; i < 5; i++) {
+        await service.recordSuccessfulTargetedSend(); // the realistic case: trial exhausted, then bought
+      }
+      await service.applyPurchase(productId: _productId, purchaseToken: 'tok-1', verifier: verifier);
+      expect((await service.status()).state, EntitlementState.fullVerified);
+
+      verifier.result = VerificationResult.rejected; // e.g. a refund happened on Google's side
+      final revoked = await service.reverifyIfDue(verifier: verifier);
+      expect(revoked.state, EntitlementState.trial);
+      expect(revoked.canSend, isFalse);
+      expect((await service.status()).state, EntitlementState.trial); // persisted
+    });
+
+    test('re-verification is skipped until the interval has elapsed', () async {
+      var now = DateTime(2026, 1, 1);
+      final verifier = _Verifier(VerificationResult.verified);
+      final service = EntitlementService(root, reverifyInterval: const Duration(days: 7), clock: () => now);
+      await service.applyPurchase(productId: _productId, purchaseToken: 'tok-1', verifier: verifier);
+      expect(verifier.calls.length, 1);
+
+      now = now.add(const Duration(days: 1));
+      await service.reverifyIfDue(verifier: verifier);
+      expect(verifier.calls.length, 1); // not due yet: verifier not called again
+
+      now = now.add(const Duration(days: 7));
+      await service.reverifyIfDue(verifier: verifier);
+      expect(verifier.calls.length, 2); // due now
+    });
+
+    test('a temporary failure on re-check never revokes and is retried next time', () async {
+      final verifier = _Verifier(VerificationResult.verified);
+      final service = EntitlementService(root, reverifyInterval: Duration.zero);
+      await service.applyPurchase(productId: _productId, purchaseToken: 'tok-1', verifier: verifier);
+
+      verifier.result = VerificationResult.temporaryFailure;
+      final status = await service.reverifyIfDue(verifier: verifier);
+      expect(status.state, EntitlementState.fullVerified); // still FULL: our backend hiccup, not a real rejection
+      expect(status.canSend, isTrue);
+    });
+
+    test('trial and grace-period (fullUnverified) states are not touched by reverifyIfDue', () async {
+      final service = EntitlementService(root);
+      final trialBefore = await service.status();
+      final trialAfter = await service.reverifyIfDue(verifier: _Verifier(VerificationResult.rejected));
+      expect(trialAfter.state, trialBefore.state);
+      expect(trialAfter.remainingTrialSends, trialBefore.remainingTrialSends);
+    });
+  });
+
   group('B2: restore / reinstall recovery', () {
     test('fresh install with an owned purchase restores to FULL', () async {
       final firstInstall = EntitlementService(root);

@@ -75,3 +75,13 @@ v1's client JSON (`{"unlocked": bool}`) was fine for functional trial testing bu
 - `ServerPurchaseVerifier` has no backend yet (by design, documented above) -- a real purchase today would sit in `fullUnverified` grace and then lapse to `restoreRequired`. Build the backend + swap it in before Play Console goes live.
 - No physical-device run of the hardened flow (only the emulator was used here); the S24 physical confirmation recorded earlier was against the pre-hardening v1 build.
 - The Play Console product still does not exist, so no real end-to-end purchase/restore was exercised against the actual store, only against the local `GooglePlayBillingAdapter` code paths that run when it's unavailable.
+
+## Verification server skeleton + periodic re-verification (refund/revoke handling)
+
+Prepared ahead of Play Console setup, per the agreed order (Play Console → real purchase → reinstall → refund → S24 → RC).
+
+- `verification_server/` (new, separate Python service, not part of the Rýchlik desktop app): `POST /verify` calls the real Google Play Developer API (`purchases.products.get`) and maps `purchaseState` to `verified`/`rejected`/`temporary_failure`. Any ambiguous or infrastructure error (auth, quota, network, an unrecognised response) is `temporary_failure`, never guessed as verified or rejected. Shared-secret bearer token auth (same pattern as `browser_bridge.py`), rate-limited. 19 tests, all real HTTP against the real server with a fake Android Publisher client — no network, no real Google credentials needed yet. See `verification_server/README.md` for the Play Console linking steps and how to point `ServerPurchaseVerifier` at it once deployed.
+- `EntitlementSource.reverifyIfDue` (new): addresses the plan's step 6 ("refund/cancel/revoked ownership must not stay permanently FULL"). Periodically (default every 7 days, called best-effort on every app launch alongside auto-restore) re-checks an already-`fullVerified` purchase; a real `rejected` result (refund/chargeback/revoke) downgrades back to `trial`, while a `temporary_failure` never revokes (a backend hiccup must not punish a real purchase) and is simply retried on the next call. 4 new tests (revoke on reject, interval gating, temporary failure never revokes, trial/grace states untouched).
+- Full Flutter suite: 176 passed. `flutter analyze`: no issues. Emulator smoke: the app still starts normally with both the auto-restore and auto-reverify launch calls in place.
+
+Still not done: `ServerPurchaseVerifier` is not yet wired to call this server (it still truthfully returns `temporary_failure` always, by design, until deployed with real credentials); no real Play Console/Google API credentials have been used anywhere in this repo.

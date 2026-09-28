@@ -61,6 +61,9 @@ class _FakeEntitlement implements EntitlementSource {
   Future<EntitlementStatus> retryPendingVerification({required PurchaseVerifier verifier}) async => _status;
 
   @override
+  Future<EntitlementStatus> reverifyIfDue({required PurchaseVerifier verifier}) async => _status;
+
+  @override
   Future<EntitlementStatus> restoreFrom(PurchaseRecord? record, {required PurchaseVerifier verifier}) async {
     if (record == null) return _status;
     return applyPurchase(productId: record.productId, purchaseToken: record.purchaseToken, verifier: verifier);
