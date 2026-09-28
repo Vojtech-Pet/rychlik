@@ -42,6 +42,7 @@ docs/DOWNLOAD_PROGRESS_RUNTIME.md.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
@@ -343,6 +344,14 @@ class ConcurrentDownloadRuntime:
             event.set()
             return True
 
+    def retry_remaining_seconds(self, queue_entry_id: str) -> float | None:
+        """Seconds until the pending automatic retry for this occurrence, or None."""
+        with self._state_lock:
+            schedule = self._retry_schedule.get(queue_entry_id)
+            if schedule is None:
+                return None
+            return max(0.0, schedule.due_monotonic - self._monotonic())
+
     def discard_retry_schedule(self, queue_entry_id: str) -> None:
         """Prompt A10: lets a higher-level facade remove a pending
         in-memory retry deadline (e.g. after retry_now() already promoted
@@ -505,10 +514,21 @@ class ConcurrentDownloadRuntime:
             entries = list(self._queue.active_entries())
             entries.extend(self._queue.get(qeid) for qeid in include_removed)
             tasks_copy = dict(self._tasks)
+            retry_due = {qeid: sched.due_monotonic for qeid, sched in self._retry_schedule.items()}
+            now_monotonic = self._monotonic()
 
-        return build_manager_snapshot(
+        snapshot = build_manager_snapshot(
             entries=entries, tasks=tasks_copy, requests=self._requests, progress_registry=self._progress_registry
         )
+        if not retry_due:
+            return snapshot
+        items = tuple(
+            dataclasses.replace(item, retry_in_seconds=max(0.0, retry_due[item.queue_entry_id] - now_monotonic))
+            if item.task_state == DownloadTaskState.RETRY_WAIT and item.queue_entry_id in retry_due
+            else item
+            for item in snapshot.items
+        )
+        return dataclasses.replace(snapshot, items=items)
 
     # --- controller loop ----------------------------------------------------
 

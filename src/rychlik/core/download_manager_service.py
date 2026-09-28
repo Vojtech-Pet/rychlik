@@ -21,6 +21,7 @@ docs/DOWNLOAD_MANAGER_SERVICE.md, "Why not GUI yet").
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 import uuid
@@ -672,13 +673,41 @@ class DownloadManagerService:
 
     # --- snapshots (§41-§46) -------------------------------------------------
 
-    def snapshot(self) -> DownloadManagerSnapshot:
+    def snapshot(self, *, include_history: bool = False, history_limit: int = 500) -> DownloadManagerSnapshot:
         """Returns A7's existing immutable DownloadManagerSnapshot -- no
         second GUI representation is invented here. Safe to call from any
         thread at any time while RUNNING (§43); uses the exact same
-        copy-then-compose locking A7 already established."""
+        copy-then-compose locking A7 already established.
+
+        `include_history=True` (Final GUI/UX implementation) additionally appends the
+        newest terminal occurrences (COMPLETED / FAILED / CANCELLED, queue state REMOVED),
+        newest first, so a download list can show finished work. The default keeps the
+        original behavior: live queue entries only."""
         self._require_running()
-        return self._runtime.manager_snapshot()
+        if not include_history:
+            return self._runtime.manager_snapshot()
+        with self._runtime.state_lock:
+            history = [
+                e for e in self._queue.all_entries()
+                if e.state == QueueEntryState.REMOVED
+                and (t := self._tasks.get(e.task_id)) is not None
+                and t.state in (DownloadTaskState.COMPLETED, DownloadTaskState.FAILED, DownloadTaskState.CANCELLED)
+            ]
+        history.sort(key=lambda e: e.updated_at, reverse=True)
+        base = self._runtime.manager_snapshot(include_removed=tuple(e.queue_entry_id for e in history[: max(0, history_limit)]))
+        live_count = len(base.items) - min(len(history), max(0, history_limit))
+        items = list(base.items)
+        for index in range(live_count, len(items)):
+            item = items[index]
+            if item.task_state != DownloadTaskState.COMPLETED or self._state_store is None:
+                continue
+            record = self._state_store.get_completed_file(item.queue_entry_id)
+            if record is not None and record.task_id == item.task_id:
+                items[index] = dataclasses.replace(
+                    item, display_name=record.display_name, bytes_downloaded=record.size_bytes,
+                    total_bytes=record.size_bytes, progress_fraction=1.0,
+                )
+        return dataclasses.replace(base, items=tuple(items))
 
     def item_snapshot(self, queue_entry_id: str) -> DownloadViewSnapshot | None:
         """A7's flat, GUI-safe DownloadViewSnapshot for one occurrence, or
@@ -691,7 +720,10 @@ class DownloadManagerService:
             task = self._tasks.get(entry.task_id)
             request = self._requests.get(entry.task_id)
         progress = self._progress_registry.snapshot(queue_entry_id) if self._progress_registry else None
-        return build_view_snapshot(queue_entry=entry, task=task, request=request, progress=progress)
+        view = build_view_snapshot(queue_entry=entry, task=task, request=request, progress=progress)
+        if view.task_state == DownloadTaskState.RETRY_WAIT:
+            view = dataclasses.replace(view, retry_in_seconds=self._runtime.retry_remaining_seconds(queue_entry_id))
+        return view
 
     # --- completed-file privileged accessor (Prompt A12) --------------------
 

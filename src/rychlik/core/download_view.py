@@ -21,7 +21,9 @@ DownloadTask lifecycle):
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Mapping, Sequence
+from urllib.parse import unquote, urlparse
 
 from rychlik.acquisition.contracts import DownloadRequest
 from rychlik.core.download_queue import DownloadQueue, QueueEntry, QueueEntryState, QueuePriority
@@ -57,6 +59,13 @@ class DownloadViewSnapshot:
     eta_seconds: float | None
 
     last_failure_code: str | None = None
+    # Final GUI/UX implementation: additive, privacy-preserving presentation fields.
+    # `source_host` is the URL host only (never userinfo, path or query); `added_at` is the
+    # queue occurrence's enqueue time.
+    source_host: str | None = None
+    added_at: datetime | None = None
+    # Seconds until the pending automatic retry, only while RETRY_WAIT with a live schedule.
+    retry_in_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +73,26 @@ class DownloadManagerSnapshot:
     items: tuple[DownloadViewSnapshot, ...]
     active_transfer_count: int
     aggregate_speed_bps: float | None
+
+
+def safe_name_from_url(url: str) -> str | None:
+    """Last URL path segment as a display-only name: no query, no fragment, no
+    directory parts, no control characters. Never used as a filesystem path."""
+    try:
+        segment = unquote(urlparse(url).path.rsplit("/", 1)[-1])
+    except ValueError:
+        return None
+    cleaned = "".join(ch for ch in segment.replace("\\", "/").rsplit("/", 1)[-1] if ch.isprintable()).strip()
+    if not cleaned or cleaned in (".", ".."):
+        return None
+    return cleaned[:255]
+
+
+def source_host_from_url(url: str) -> str | None:
+    try:
+        return urlparse(url).hostname or None
+    except ValueError:
+        return None
 
 
 def build_view_snapshot(
@@ -77,7 +106,11 @@ def build_view_snapshot(
     caller is responsible for obtaining `queue_entry`/`task`/`progress` as
     a mutually consistent-enough snapshot (see ConcurrentDownloadRuntime's
     manager_snapshot() for the copy-then-compose locking strategy)."""
-    display_name = request.filename_hint if request is not None else None
+    display_name = None
+    source_host = None
+    if request is not None:
+        display_name = request.filename_hint or safe_name_from_url(request.url)
+        source_host = source_host_from_url(request.url)
 
     if task is None:
         # Structurally shouldn't happen for a live QueueEntry (A3's own
@@ -97,6 +130,8 @@ def build_view_snapshot(
             progress_fraction=None,
             speed_bps=None,
             eta_seconds=None,
+            source_host=source_host,
+            added_at=queue_entry.enqueued_at,
         )
 
     # Consistency check (§73/§90): progress telemetry must belong to the
@@ -140,6 +175,8 @@ def build_view_snapshot(
         speed_bps=speed_bps,
         eta_seconds=eta_seconds,
         last_failure_code=task.last_failure.code if task.last_failure is not None else None,
+        source_host=source_host,
+        added_at=queue_entry.enqueued_at,
     )
 
 
