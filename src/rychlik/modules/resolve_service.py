@@ -16,7 +16,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from rychlik.acquisition.contracts import DownloadRequest
+from rychlik.acquisition.contracts import DownloadRequest, MediaOptions
+from rychlik.acquisition.media_ytdlp import known_video_page
 from rychlik.modules.catalog import describe
 from rychlik.modules.legacy_adapter import ResolutionCancelled, ResolutionError, resolve_with_legacy_module
 from rychlik.modules.registry import AmbiguousModuleMatch, ModuleError, ModuleRegistry
@@ -77,6 +78,8 @@ class ModuleResolveService:
         except ModuleError as exc:  # an unreadable registry must not stop ordinary downloads
             return ResolveOutcome(ResolveKind.PLAIN, diagnostics=(f"module registry unavailable: {exc}",))
         if match is None:
+            if known_video_page(url):
+                return ResolveOutcome(ResolveKind.RESOLVED, request=DownloadRequest(url=url, destination_dir=destination_dir, media=MediaOptions()))
             return ResolveOutcome(ResolveKind.PLAIN)
         name = self._name(match.module_id)
         try:

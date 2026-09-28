@@ -195,10 +195,10 @@ def test_bundled_media_sites_module_from_the_real_dialog(qapp, tmp_path):
         assert pump(lambda: dialog.result() == dialog.DialogCode.Accepted)
         [request] = rig.enqueued()
         assert request.url == url and request.media is not None and request.destination_dir == tmp_path / "dl"
-        rig.registry.set_enabled("media_sites", False)  # same URL, module disabled -> ordinary path
+        rig.registry.set_enabled("media_sites", False)  # same URL, module disabled -> yt-dlp's own XVideos extractor still applies
         dialog2 = rig.dialog(url)
         dialog2.download_button.click()
-        assert pump(lambda: dialog2.result() == dialog2.DialogCode.Accepted) and rig.enqueued()[1].media is None
+        assert pump(lambda: dialog2.result() == dialog2.DialogCode.Accepted) and rig.enqueued()[1].media is not None
         rig.registry.set_enabled("media_sites", True)  # and enabled again -> module again
         dialog3 = rig.dialog(url)
         dialog3.download_button.click()
@@ -243,3 +243,25 @@ def test_a_late_result_for_a_cancelled_job_or_a_closing_window_is_dropped_by_the
     rig.widget._shutting_down = True
     rig.widget._on_resolve_finished(ResolveJob(), outcome, ("https://site.example/x", rig.tmp / "dl", lambda ok, msg: called.append(ok), None))
     assert rig.enqueued() == [] and called == []
+
+
+def test_a_page_yt_dlp_recognises_is_downloaded_as_media_even_without_any_module(rig, monkeypatch):
+    import rychlik.modules.resolve_service as resolve_service
+
+    monkeypatch.setattr(resolve_service, "known_video_page", lambda url: "youtube.com" in url)
+    dialog = rig.dialog("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    dialog.download_button.click()
+    assert pump(lambda: dialog.result() == dialog.DialogCode.Accepted)
+    [request] = rig.enqueued()
+    assert request.url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ" and request.media is not None
+
+
+def test_an_ordinary_file_link_yt_dlp_does_not_know_stays_a_plain_download(rig, monkeypatch):
+    import rychlik.modules.resolve_service as resolve_service
+
+    monkeypatch.setattr(resolve_service, "known_video_page", lambda url: False)
+    dialog = rig.dialog("https://example.test/file.zip")
+    dialog.download_button.click()
+    assert pump(lambda: dialog.result() == dialog.DialogCode.Accepted)
+    [request] = rig.enqueued()
+    assert request.media is None

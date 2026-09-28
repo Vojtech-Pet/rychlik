@@ -28,6 +28,7 @@ _ALLOWED_EXTENSIONS = frozenset({"mp4", "webm", "mkv", "mov", "m4a", "mp3", "ts"
 _STREAM_PROTOCOLS = ("m3u8", "dash", "http_dash_segments")
 _HTML_EXTENSIONS = frozenset({"html", "htm", "php", "asp", "aspx"})
 _UNSAFE_NAME = re.compile(r"[\\/:*?\"<>|\x00-\x1f]")
+_GENERIC_EXTRACTORS = frozenset({"Generic"})
 
 
 class _Stopped(Exception):
@@ -147,3 +148,22 @@ class MediaAcquisition:
 def _clean_message(exc: Exception) -> str:
     text = re.sub(r"\x1b\[[0-9;]*m", "", str(exc)).strip()
     return (text.splitlines()[-1] if text else "The media download failed")[:300]
+
+
+def known_video_page(url: str) -> bool:
+    """True when yt-dlp has a dedicated extractor for this URL (YouTube, Vimeo, ...), never the generic
+    HTML-sniffing one. Used only to decide whether Add download should treat a pasted address as media without
+    the user having to say so -- it does not fetch anything."""
+    try:
+        from yt_dlp.extractor import gen_extractor_classes
+    except ImportError:
+        return False
+    for cls in gen_extractor_classes():
+        if cls.ie_key() in _GENERIC_EXTRACTORS:
+            continue
+        try:
+            if cls.suitable(url):
+                return True
+        except Exception:  # noqa: BLE001 - one broken extractor must not hide the others or crash detection
+            continue
+    return False

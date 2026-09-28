@@ -154,3 +154,12 @@ def test_manager_queue_runs_a_media_request_end_to_end_and_pause_resume_cancel_w
         assert _wait(lambda: not list((tmp_path / "dl").glob("gone*")))
     finally:
         manager.stop()
+
+
+def test_known_video_page_uses_the_real_yt_dlp_extractor_list():
+    from rychlik.acquisition.media_ytdlp import known_video_page
+
+    assert known_video_page("https://www.youtube.com/watch?v=dQw4w9WgXcQ") is True
+    assert known_video_page("https://vimeo.com/76979871") is True
+    assert known_video_page("https://example.test/some/file.zip") is False
+    assert known_video_page("not a url") is False

@@ -784,7 +784,7 @@ class DownloadManagerWidget(QWidget):
                 return
             self._destination_dir = destination
             self._refresh_now()
-            on_done(True, f"Added using {outcome.module_name}")
+            on_done(True, f"Added using {outcome.module_name}" if outcome.module_name else "")
         elif outcome.kind == ResolveKind.AMBIGUOUS:
             on_done(False, outcome.message)
         elif outcome.kind == ResolveKind.FAILED:
