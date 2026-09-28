@@ -61,3 +61,18 @@ Problem (S24 run): sharing an x.com link to Facebook sends a *link*, so the reci
 Evidence: Flutter 128 passed (22 in `incoming_share_test.dart`, incl. auto-start, cancel/late-result, failure, file-vs-link routing and channel mapping); Kotlin 18 passed; emulator with the real release APK and a local HTTP server: the link `http://10.0.2.2:8790/clip.mp4` -> "Getting the video…" -> "clip.mp4 · 42 KB" -> the test sink reads it over `content://` with `display_name=clip.mp4`, `size=43149` and a SHA-256 identical to the served file; a non-video page shows the friendly message and the link apps (`artifacts/incoming_share/video_ready.png`, `video_not_found.png`).
 
 Not verified: **real x.com / Facebook links on the S24** (public tweets should work through yt-dlp, but X changes often and some posts need a login; yt-dlp can only be updated by shipping a new APK), battery/time for large videos, videos that need ffmpeg merging (they fail with a message instead of being sent).
+
+
+## Physical S24 (user-observed, screenshots supplied 2026-09-28) — partial
+
+| Check | Result |
+|-------|--------|
+| Facebook Share opens One UI "Zdieľanie odkazu" with the link | seen (Quick Share, Messenger, WhatsApp, Gmail, Instagram …; FriendSend not in the visible part of the row) |
+| FriendSend reachable from that share | seen: FriendSend opened on "Share link" showing `https://www.facebook.com/share/1DEpvrLAgP/` with no pairing screen |
+| Apps picker | seen (v1 picker): cut off alphabetically before Messenger/WhatsApp -> fixed in v1.1 (social first, inline grid) |
+| More apps… -> Android Sharesheet | seen: One UI sheet with the same link (Quick Share, Messenger, Gmail, WhatsApp, Instagram …); FriendSend not offered in the visible part |
+| Messenger / WhatsApp receiving the exact link | **not yet confirmed** |
+| Position of FriendSend in Facebook's own Sharesheet | **not controllable**: decided by One UI ranking; direct-share shortcut added in v1.1 |
+| v1.1/v1.2/v2 behaviour (inline apps, automatic video, Save to phone) | user reported "funguje" for the video path; details not recorded |
+
+Only the rows marked "seen" are evidence; the two "not yet confirmed" rows are still open, so the physical close-out (PASS lines for Messenger / WhatsApp / exact text) is not written.
