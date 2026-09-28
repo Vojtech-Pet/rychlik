@@ -60,7 +60,12 @@ class AddDownloadDialog(QDialog):
         drow.addWidget(self.browse_button)
         layout.addLayout(drow)
 
-        layout.addSpacing(14)
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        self.status_label.setProperty("role", "caption")
+        layout.addSpacing(6)
+        layout.addWidget(self.status_label)
+        layout.addSpacing(8)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.cancel_button = QPushButton("Cancel")
@@ -72,7 +77,8 @@ class AddDownloadDialog(QDialog):
         buttons.addWidget(self.download_button)
         layout.addLayout(buttons)
 
-        self.url_input.textChanged.connect(lambda text: self.download_button.setEnabled(bool(text.strip())))
+        self._job = None
+        self.url_input.textChanged.connect(lambda text: self.download_button.setEnabled(bool(text.strip()) and self._job is None))
         self.url_input.returnPressed.connect(self._submit)
         self.paste_button.clicked.connect(self._paste)
         self.browse_button.clicked.connect(self._browse)
@@ -95,5 +101,31 @@ class AddDownloadDialog(QDialog):
     def _submit(self) -> None:
         if not self.download_button.isEnabled():
             return
-        if self._widget.submit_download(self.url_input.text(), self._destination):
+        self.status_label.setText("")
+        self._finished = False
+        job = self._widget.submit_download_async(self.url_input.text(), self._destination, self._on_result)
+        if job is not None and not self._finished:  # a module is resolving the address in the background
+            self._job = job
+            self._set_busy(True)
+            self.status_label.setText("Resolving URL…")
+
+    def _on_result(self, ok: bool, message: str) -> None:
+        self._finished = True
+        self._job = None
+        self._set_busy(False)
+        if ok:
             self.accept()
+        else:
+            self.status_label.setText(message)
+
+    def _set_busy(self, busy: bool) -> None:
+        self.url_input.setEnabled(not busy)
+        self.paste_button.setEnabled(not busy)
+        self.browse_button.setEnabled(not busy)
+        self.download_button.setEnabled(not busy and bool(self.url_input.text().strip()))
+
+    def done(self, result: int) -> None:
+        if self._job is not None:  # closing the dialog while a module is resolving cancels it: nothing is enqueued
+            self._job.cancel()
+            self._job = None
+        super().done(result)

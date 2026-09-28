@@ -92,6 +92,7 @@ class DownloadManagerWidget(QWidget):
     status_message = Signal(str)
     add_requested = Signal()
     open_queues_requested = Signal()
+    _resolve_finished = Signal(object, object, object)  # job, outcome, callback (queued onto the GUI thread)
 
     def __init__(
         self,
@@ -103,9 +104,12 @@ class DownloadManagerWidget(QWidget):
         share_launcher: Callable | None = None,
         details_launcher: Callable | None = None,
         theme: str = "dark",
+        resolve_service=None,
     ) -> None:
         super().__init__(parent)
         self._manager = manager
+        self._resolve_service = resolve_service
+        self._resolve_jobs: set = set()
         self._theme = theme
         self._refresh_pending = False
         self._add_in_progress = False
@@ -124,6 +128,7 @@ class DownloadManagerWidget(QWidget):
         self.proxy = DownloadFilterProxy(self)
         self.proxy.setSourceModel(self.model)
 
+        self._resolve_finished.connect(self._on_resolve_finished)
         self._bridge = ManagerQtBridge(manager, parent=self)
         self._bridge.manager_event.connect(self._on_manager_event)
         self._bridge.attach()
@@ -366,6 +371,9 @@ class DownloadManagerWidget(QWidget):
     # --- shutdown / close -------------------------------------------------------------------------
 
     def shutdown(self) -> None:
+        for job in list(self._resolve_jobs):
+            job.cancel()
+        self._resolve_jobs.clear()
         self._retry_timer.stop()
         self._bridge.detach()
 
@@ -732,6 +740,58 @@ class DownloadManagerWidget(QWidget):
         self._destination_dir = destination
         self._refresh_now()
         return True
+
+    # --- add download through site modules ---------------------------------------------------------------------
+
+    def submit_download_async(self, url: str, destination_dir: Path | None, on_done):
+        """Add-download entry point used by the dialog. `on_done(ok, message)` is called on the GUI thread once the download
+        was added or refused. With no module service this is exactly the ordinary path, completed synchronously.
+        Returns a job (with cancel()) while a module resolves the URL, else None."""
+        if self._resolve_service is None:
+            on_done(self.submit_download(url, destination_dir), "")
+            return None
+        url = url.strip()
+        if not url:
+            QMessageBox.warning(self, "Rýchlik", "Enter a URL first.")
+            on_done(False, "")
+            return None
+        destination = Path(destination_dir) if destination_dir is not None else self._destination_dir
+        if not destination.is_dir():
+            QMessageBox.warning(self, "Rýchlik", f"Destination is not a valid directory:\n{destination}")
+            on_done(False, "")
+            return None
+        job = self._resolve_service.start(
+            url, destination, lambda finished_job, outcome: self._resolve_finished.emit(finished_job, outcome, (url, destination, on_done))
+        )
+        self._resolve_jobs.add(job)
+        return job
+
+    def _on_resolve_finished(self, job, outcome, context) -> None:
+        self._resolve_jobs.discard(job)
+        url, destination, on_done = context
+        if job.cancelled or self._shutting_down:
+            return  # the user cancelled or the window is closing: nothing is enqueued and no stale callback runs
+        from rychlik.modules.resolve_service import ResolveKind
+
+        if outcome.kind == ResolveKind.PLAIN:
+            on_done(self.submit_download(url, destination), "")
+        elif outcome.kind == ResolveKind.RESOLVED:
+            try:
+                self._manager.add_download(outcome.request)
+            except Exception as exc:  # noqa: BLE001
+                self._show_command_error("add the download", exc)
+                on_done(False, "")
+                return
+            self._destination_dir = destination
+            self._refresh_now()
+            on_done(True, f"Added using {outcome.module_name}")
+        elif outcome.kind == ResolveKind.AMBIGUOUS:
+            on_done(False, outcome.message)
+        elif outcome.kind == ResolveKind.FAILED:
+            who = f"{outcome.module_name}: " if outcome.module_name else ""
+            on_done(False, f"Could not resolve this URL.\n{who}{outcome.message}")
+        else:
+            on_done(False, "")
 
     def open_add_dialog(self) -> None:
         from rychlik.gui.dialogs import AddDownloadDialog
