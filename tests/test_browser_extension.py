@@ -19,7 +19,7 @@ DRIVER = r"""
 const {rychlikBridgeFetch} = require(process.argv[2] + "/bridge-client.js");
 const port = Number(process.argv[3]);
 const token = process.argv[4];
-globalThis.fetch = ((orig) => (url, init) => orig(String(url).replace(/:17654/, ":" + port), init))(globalThis.fetch);
+globalThis.fetch = ((orig) => (url, init) => orig(String(url).replace(/:17655/, ":" + port), init))(globalThis.fetch);
 const store = {};
 const api = {storage: {local: {get: async k => ({[k]: store[k]}), set: async o => Object.assign(store, o)}}};
 (async () => {
@@ -55,14 +55,14 @@ def test_node_client_sends_the_token_and_reports_missing_or_wrong_tokens(tmp_pat
 
 def test_web_page_side_script_never_talks_to_the_app_or_holds_the_token():
     content = (EXT / "content.js").read_text("utf-8")
-    assert "17654" not in content and "fetch(" not in content and "rychlikToken" not in content
+    assert "17655" not in content and "fetch(" not in content and "rychlikToken" not in content
     assert 'runtime.sendMessage({type: "bridge"' in content  # goes through the background script instead
 
 
 def test_only_the_background_script_and_client_know_the_port_and_token():
     for name in ("background.js", "popup.js"):
         text = (EXT / name).read_text("utf-8")
-        assert "17654" not in text, name
+        assert "17655" not in text, name
     manifest = json.loads((EXT / "manifest.json").read_text("utf-8"))
     assert manifest["background"]["scripts"] == ["bridge-client.js", "background.js"]
 
@@ -88,7 +88,7 @@ const api = {
 };
 const realFetch = globalThis.fetch;
 const ctx = vm.createContext({browser: api, globalThis: null, console, navigator: {userAgent: "Firefox"}, URL, Map, Promise, JSON, setTimeout,
-  fetch: (u, i) => realFetch(String(u).replace(/:17654/, ":" + port), i)});
+  fetch: (u, i) => realFetch(String(u).replace(/:17655/, ":" + port), i)});
 ctx.globalThis = ctx;
 for (const f of ["bridge-client.js", "background.js"]) vm.runInContext(fs.readFileSync(dir + "/" + f, "utf8").replace("if (typeof module", "if (false && typeof module"), ctx);
 const call = (msg) => new Promise(res => {

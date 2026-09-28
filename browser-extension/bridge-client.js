@@ -1,6 +1,6 @@
 // Talks to the Rýchlik desktop app on 127.0.0.1. The secret token lives only in extension storage and is
 // sent from the background script, never from a web page, so a page cannot use the app's local server.
-const RYCHLIK_PORT = 17654;
+const RYCHLIK_PORT = 17655;
 const RYCHLIK_TOKEN_KEY = "rychlikToken";
 
 async function rychlikBridgeFetch(api, path, body) {

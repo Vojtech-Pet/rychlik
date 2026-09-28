@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
-DEFAULT_PORT = 17654
+DEFAULT_PORT = 17655
 MAX_BODY_BYTES = 64 * 1024
 TOKEN_HEADER = "X-Rychlik-Token"
 _EXTENSION_ORIGIN_SCHEMES = ("moz-extension://", "chrome-extension://")

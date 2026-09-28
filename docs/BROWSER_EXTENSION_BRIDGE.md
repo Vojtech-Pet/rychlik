@@ -1,7 +1,7 @@
 # Browser extension bridge
 
 The extension from `rychlik-downloader/browser-extension/` now lives in `browser-extension/` and talks to the new Rýchlik through a
-loopback bridge (`src/rychlik/bridge/browser_bridge.py`), on the same port as before (127.0.0.1:17654).
+loopback bridge (`src/rychlik/bridge/browser_bridge.py`), on its own port, 127.0.0.1:17655 (the old downloader keeps 17654, so both can run at the same time and neither extension can reach the other app).
 
 ## Why it changed
 
@@ -28,7 +28,7 @@ still get the URL first. `/formats` returns the quality list (Najlepšia kvalita
 ## Setup
 
 1. Rýchlik → Settings → Browser extension → Copy token.
-2. Install `dist/rychlik-desktop-2.0.0.xpi` (see below) or load `browser-extension/manifest.json` via about:debugging → Load Temporary Add-on, open the extension popup, paste the token, Save.
+2. Install `dist/rychlik-desktop-2.0.1.xpi` (see below) or load `browser-extension/manifest.json` via about:debugging → Load Temporary Add-on, open the extension popup, paste the token, Save.
 
 ## Evidence
 
@@ -39,13 +39,12 @@ still get the URL first. `/formats` returns the quality list (Najlepšia kvalita
 - Full suite 1234 passed.
 
 Not verified: the extension loaded in a real Firefox/Chrome (only Node with a mocked browser API), the floating button and quality
-panel on real sites, Chrome (the manifest is Firefox-style `background.scripts`, unchanged from the old extension), and the old app
-running at the same time (it also listens on 17654; the second one to start reports the port as taken in Settings).
+panel on real sites, Chrome (the manifest is Firefox-style `background.scripts`, unchanged from the old extension), and both apps running together in a real browser (they use different ports, 17654 old / 17655 new, and the new app's Settings reports if 17655 is taken).
 
 ## Firefox package
 
-`npx web-ext build --source-dir browser-extension --artifacts-dir dist --filename rychlik-desktop-2.0.0.zip` (copied to `rychlik-desktop-2.0.0.xpi`); `web-ext lint`: 0 errors, 0 warnings.
-Version 2.0.0 (the token makes it incompatible with the old app's open bridge). The package is **unsigned**, like the earlier `.xpi` files in `rychlik-downloader/web-ext-artifacts`:
+`npx web-ext build --source-dir browser-extension --artifacts-dir dist --filename rychlik-desktop-2.0.1.zip` (copied to `rychlik-desktop-2.0.1.xpi`); `web-ext lint`: 0 errors, 0 warnings.
+Version 2.0.1 (2.0.0 shared the old app's port 17654 and connected to it when the old app was running; the token makes it incompatible with the old app's open bridge). The package is **unsigned**, like the earlier `.xpi` files in `rychlik-downloader/web-ext-artifacts`:
 Firefox release refuses unsigned add-ons; install it in Firefox Developer Edition / Nightly / ESR with `xpinstall.signatures.required = false`, or load it temporarily
 from `about:debugging`. A permanently installable build for regular Firefox needs signing on addons.mozilla.org (unlisted), which needs an account and API keys.
 

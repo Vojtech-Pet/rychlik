@@ -1,14 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Rýchlik",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Odošle odkazy do aplikácie Rýchlik pre Linux.",
   "icons": {
     "48": "icon.svg",
     "96": "icon.svg"
   },
   "permissions": ["activeTab", "contextMenus", "notifications", "storage", "tabs", "webRequest"],
-  "host_permissions": ["<all_urls>", "http://127.0.0.1:17654/*", "http://localhost:17654/*"],
+  "host_permissions": ["<all_urls>", "http://127.0.0.1:17655/*", "http://localhost:17655/*"],
   "content_scripts": [{
     "matches": ["http://*/*", "https://*/*"],
     "js": ["content.js"],
