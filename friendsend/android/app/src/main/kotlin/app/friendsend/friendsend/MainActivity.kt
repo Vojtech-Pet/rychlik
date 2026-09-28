@@ -1,5 +1,7 @@
 package app.friendsend.friendsend
 
+import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -32,17 +34,36 @@ class MainActivity : FlutterActivity() {
     private val serviceType = "_friendsend._tcp"
     private var nsdManager: NsdManager? = null
     private var registrationListener: NsdManager.RegistrationListener? = null
+    private val shareTargetResolver by lazy { ShareTargetResolver(this) }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, shareChannelName).setMethodCallHandler { call, result ->
-            if (call.method == "shareFile") {
-                val path = call.argument<String>("path")
-                val displayName = call.argument<String>("displayName") ?: "shared_file"
-                val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
-                result.success(handleShareFile(path, displayName, mimeType))
-            } else {
-                result.notImplemented()
+            when (call.method) {
+                "shareFile" -> {
+                    val path = call.argument<String>("path")
+                    val displayName = call.argument<String>("displayName") ?: "shared_file"
+                    val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+                    result.success(handleShareFile(path, displayName, mimeType))
+                }
+                "listShareTargets" -> {
+                    val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+                    Thread {
+                        val targets = try {
+                            shareTargetResolver.resolve(mimeType)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                        runOnUiThread { result.success(targets) }
+                    }.start()
+                }
+                "shareToTarget" -> {
+                    val path = call.argument<String>("path")
+                    val displayName = call.argument<String>("displayName") ?: "shared_file"
+                    val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+                    result.success(handleShareToTarget(path, displayName, mimeType, call.argument<String>("targetId")))
+                }
+                else -> result.notImplemented()
             }
         }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, mdnsChannelName).setMethodCallHandler { call, result ->
@@ -117,30 +138,9 @@ class MainActivity : FlutterActivity() {
      * malicious Dart call can never turn this into arbitrary-file sharing.
      */
     private fun handleShareFile(path: String?, displayName: String, mimeType: String): String {
-        if (path.isNullOrEmpty()) {
-            return "INVALID_TEMP_FILE"
-        }
-        val allowedRoot = File(cacheDir, "friendsend").canonicalFile
-        val requested = File(path).canonicalFile
-        if (!requested.path.startsWith(allowedRoot.path + File.separator) && requested.path != allowedRoot.path) {
-            return "INVALID_TEMP_FILE"
-        }
-        if (!requested.exists() || !requested.isFile) {
-            return "INVALID_TEMP_FILE"
-        }
-
+        val prepared = prepareShareUri(path, displayName, mimeType)
+        val uri = prepared.first ?: return prepared.second
         return try {
-            // Prompt A17-E1: the physical temp file keeps its safe,
-            // UUID-derived name (TempCache never trusts a declared
-            // filename as a disk path) -- only the FileProvider's
-            // *advertised* OpenableColumns.DISPLAY_NAME changes, via the
-            // 4-arg getUriForFile overload (AndroidX Core 1.5.0+; this
-            // project resolves 1.13.1). The network-declared name can
-            // therefore never influence where anything is written, only
-            // what a recipient sees it called.
-            val safeDisplayName = sanitizeShareDisplayName(rawDisplayName = displayName, mimeType = mimeType)
-            // Prompt A14 §53: content:// only, never file://.
-            val uri: Uri = FileProvider.getUriForFile(this, fileProviderAuthority, requested, safeDisplayName)
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = mimeType
                 putExtra(Intent.EXTRA_STREAM, uri)
@@ -159,6 +159,65 @@ class MainActivity : FlutterActivity() {
             }
         } catch (_: Exception) {
             "PLATFORM_ERROR"
+        }
+    }
+
+    /**
+     * Targeted ACTION_SEND to one component chosen from the picker. Same private-cache guard and DISPLAY_NAME
+     * handling as [handleShareFile]; the component is re-checked against the system right before launching so a
+     * vanished app produces TARGET_UNAVAILABLE instead of a crash. Returns TARGET_OPENED only when the system
+     * accepted the launch -- never a claim that anyone received the file.
+     */
+    private fun handleShareToTarget(path: String?, displayName: String, mimeType: String, targetId: String?): String {
+        val component = parseComponentId(targetId) ?: return "TARGET_UNAVAILABLE"
+        val prepared = prepareShareUri(path, displayName, mimeType)
+        val uri = prepared.first ?: return prepared.second
+        if (!shareTargetResolver.isStillAvailable(mimeType, component.first, component.second)) {
+            return "TARGET_UNAVAILABLE"
+        }
+        return try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                clipData = ClipData.newRawUri("", uri)
+                setComponent(shareTargetResolver.component(component.first, component.second))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(intent)
+            "TARGET_OPENED"
+        } catch (_: ActivityNotFoundException) {
+            "TARGET_UNAVAILABLE"
+        } catch (_: Exception) {
+            "PLATFORM_ERROR"
+        }
+    }
+
+    /** Returns (uri, "") on success or (null, resultCode). */
+    private fun prepareShareUri(path: String?, displayName: String, mimeType: String): Pair<Uri?, String> {
+        if (path.isNullOrEmpty()) {
+            return null to "INVALID_TEMP_FILE"
+        }
+        val allowedRoot = File(cacheDir, "friendsend").canonicalFile
+        val requested = File(path).canonicalFile
+        if (!requested.path.startsWith(allowedRoot.path + File.separator) && requested.path != allowedRoot.path) {
+            return null to "INVALID_TEMP_FILE"
+        }
+        if (!requested.exists() || !requested.isFile) {
+            return null to "INVALID_TEMP_FILE"
+        }
+        return try {
+            // Prompt A17-E1: the physical temp file keeps its safe,
+            // UUID-derived name (TempCache never trusts a declared
+            // filename as a disk path) -- only the FileProvider's
+            // *advertised* OpenableColumns.DISPLAY_NAME changes, via the
+            // 4-arg getUriForFile overload. The network-declared name can
+            // therefore never influence where anything is written, only
+            // what a recipient sees it called.
+            val safeDisplayName = sanitizeShareDisplayName(rawDisplayName = displayName, mimeType = mimeType)
+            // Prompt A14 §53: content:// only, never file://.
+            FileProvider.getUriForFile(this, fileProviderAuthority, requested, safeDisplayName) to ""
+        } catch (_: Exception) {
+            null to "PLATFORM_ERROR"
         }
     }
 }

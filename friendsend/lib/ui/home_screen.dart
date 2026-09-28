@@ -103,9 +103,23 @@ class _HomeScreenState extends State<HomeScreen> {
       case PickerAction.systemSheet:
         await _openSystemSheet();
       case PickerAction.target:
-        widget.controller.cancelChoosing(); // targeted send is wired natively in the target-picker stage
+        await _sendToTarget(result!.target!);
       case null:
         widget.controller.cancelChoosing();
+    }
+  }
+
+  Future<void> _sendToTarget(ShareTarget target) async {
+    final result = await widget.controller.shareToTarget(target);
+    if (result == TargetShareResult.opened || !mounted) return;
+    final message = result == TargetShareResult.targetUnavailable
+        ? '${target.label} isn’t available any more. Pick another app.'
+        : 'Couldn’t open ${target.label}. The file is still here.';
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    if (result == TargetShareResult.targetUnavailable && widget.controller.current.state == AppState.choosingTarget) {
+      _scheduleSheet(); // reopen with a freshly resolved list
+    } else {
+      widget.controller.cancelChoosing();
     }
   }
 

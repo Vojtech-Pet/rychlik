@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import '../platform/share_bridge.dart';
+import '../platform/share_targets.dart';
 import '../protocol/protocol.dart';
 import '../receiver/receiver_interface.dart';
 import '../receiver/receiver_server.dart' show ReceiverEvent, ReceiverEventKind;
@@ -264,6 +265,22 @@ class HandoffController {
     if (result == ShareResult.opened) {
       if (!handoffAccepted() && _current.state == AppState.received) _emit(_current.copyWith(shareOpened: true));
     }
+    return result;
+  }
+
+  /// Targeted send to one app chosen in the picker. Marks handoff accepted only if Android accepted the launch;
+  /// if the app vanished the picker stays open state-wise (choosingTarget) and the caller refreshes the list.
+  Future<TargetShareResult> shareToTarget(ShareTarget target) async {
+    final s = _current;
+    final path = s.filePath;
+    if (s.state != AppState.choosingTarget || path == null) return TargetShareResult.invalidTempFile;
+    final result = await shareBridge.shareToTarget(
+      path: path,
+      displayName: s.displayName ?? 'received',
+      mimeType: s.mimeType ?? 'application/octet-stream',
+      targetId: target.id,
+    );
+    if (result == TargetShareResult.opened) handoffAccepted(targetLabel: target.label);
     return result;
   }
 

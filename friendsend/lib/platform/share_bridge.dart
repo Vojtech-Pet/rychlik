@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import 'share_targets.dart';
+
 /// Thin Flutter<->Kotlin bridge (Prompt A14 §51/§131-135).
 ///
 /// Deliberately tiny: one method, one bounded result enum. Kotlin owns all
@@ -7,6 +9,9 @@ import 'package:flutter/services.dart';
 /// a generic method-channel surface, and the raw Android exception object
 /// never reaches Dart/UI code (§134).
 enum ShareResult { opened, noShareTarget, invalidTempFile, platformError }
+
+/// Result of a targeted ACTION_SEND. `opened` means only that Android accepted the launch.
+enum TargetShareResult { opened, targetUnavailable, invalidTempFile, platformError }
 
 class ShareBridge {
   ShareBridge({MethodChannel? channel}) : _channel = channel ?? const MethodChannel('app.friendsend/share');
@@ -43,4 +48,62 @@ class ShareBridge {
       return ShareResult.platformError;
     }
   }
+
+  /// Real installed apps that can take this MIME type (resolved natively; icons are the apps' own).
+  /// Any failure yields an empty list -- the picker then still offers the system Sharesheet row.
+  Future<List<ShareTarget>> listTargets(String mimeType) async {
+    try {
+      final raw = await _channel.invokeListMethod<Map<Object?, Object?>>('listShareTargets', {'mimeType': mimeType});
+      if (raw == null) return const [];
+      return [
+        for (final m in raw)
+          if (m['id'] is String && m['label'] is String)
+            ShareTarget(id: m['id']! as String, label: m['label']! as String, icon: m['icon'] is Uint8List ? m['icon']! as Uint8List : null),
+      ];
+    } on MissingPluginException {
+      return const [];
+    } on PlatformException {
+      return const [];
+    }
+  }
+
+  Future<TargetShareResult> shareToTarget({
+    required String path,
+    required String displayName,
+    required String mimeType,
+    required String targetId,
+  }) async {
+    try {
+      final result = await _channel.invokeMethod<String>('shareToTarget', {
+        'path': path,
+        'displayName': displayName,
+        'mimeType': mimeType,
+        'targetId': targetId,
+      });
+      switch (result) {
+        case 'TARGET_OPENED':
+          return TargetShareResult.opened;
+        case 'TARGET_UNAVAILABLE':
+          return TargetShareResult.targetUnavailable;
+        case 'INVALID_TEMP_FILE':
+          return TargetShareResult.invalidTempFile;
+        default:
+          return TargetShareResult.platformError;
+      }
+    } on MissingPluginException {
+      return TargetShareResult.platformError;
+    } on PlatformException {
+      return TargetShareResult.platformError;
+    }
+  }
+}
+
+/// Production provider: asks the platform bridge.
+class PlatformShareTargetProvider implements ShareTargetProvider {
+  PlatformShareTargetProvider(this._bridge);
+
+  final ShareBridge _bridge;
+
+  @override
+  Future<List<ShareTarget>> targetsFor(String mimeType) => _bridge.listTargets(mimeType);
 }

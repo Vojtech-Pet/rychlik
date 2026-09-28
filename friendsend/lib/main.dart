@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'handoff/handoff_controller.dart';
 import 'identity/device_identity.dart';
 import 'platform/share_bridge.dart';
+import 'platform/share_targets.dart';
 import 'receiver/receiver_server.dart' show ReceiverConfig;
 import 'receiver/temp_cache.dart';
 import 'security/auth_challenge.dart';
@@ -68,12 +69,13 @@ Future<void> main() async {
     friendSendEndpointPort: receiver.port,
     trustStore: trustStore,
   );
-  final controller = HandoffController(receiver: receiver, tempCache: tempCache, shareBridge: ShareBridge());
+  final shareBridge = ShareBridge();
+  final controller = HandoffController(receiver: receiver, tempCache: tempCache, shareBridge: shareBridge);
   await controller.restoreTrustState(trustStore);
   await controller.runStartupCleanup();
   controller.startPeriodicCleanup();
 
-  runApp(FriendSendApp(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore));
+  runApp(FriendSendApp(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore, targetProvider: PlatformShareTargetProvider(shareBridge)));
 }
 
 class FriendSendApp extends StatelessWidget {
@@ -83,12 +85,14 @@ class FriendSendApp extends StatelessWidget {
     required this.pairingManager,
     required this.controller,
     this.trustStore,
+    this.targetProvider = const NoShareTargets(),
   });
 
   final DeviceIdentity identity;
   final SecurePairingManager pairingManager;
   final HandoffController controller;
   final DesktopTrustStore? trustStore;
+  final ShareTargetProvider targetProvider;
 
   @override
   Widget build(BuildContext context) {
@@ -97,7 +101,7 @@ class FriendSendApp extends StatelessWidget {
       theme: FsTheme.build(Brightness.light),
       darkTheme: FsTheme.build(Brightness.dark),
       themeMode: ThemeMode.system,
-      home: HomeScreen(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore),
+      home: HomeScreen(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore, targetProvider: targetProvider),
     );
   }
 }

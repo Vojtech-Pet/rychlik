@@ -28,7 +28,16 @@ class _Receiver implements FriendSendReceiverLike {
 
 class _Bridge extends ShareBridge {
   ShareResult result = ShareResult.opened;
+  TargetShareResult targetResult = TargetShareResult.opened;
+  final targetCalls = <String>[];
   int calls = 0;
+
+  @override
+  Future<TargetShareResult> shareToTarget({required String path, required String displayName, required String mimeType, required String targetId}) async {
+    targetCalls.add('$targetId|$displayName|$mimeType');
+    return targetResult;
+  }
+
   @override
   Future<ShareResult> shareFile({required String path, required String displayName, required String mimeType}) async {
     calls++;
@@ -254,5 +263,57 @@ void main() {
     await flush(t);
     expect((await t.runAsync(() => store.allDesktops()))!, isEmpty);
     expect(find.text('Connect to Rýchlik'), findsOneWidget);
+  });
+
+  testWidgets('tapping a real target sends to that app only and shows handoff accepted with its label', (t) async {
+    c.markPaired();
+    await pump(t, targets: _Targets());
+    await emit(t, received());
+    await t.tap(find.byKey(const Key('choose_app_button')));
+    await flush(t);
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const Key('target_a')));
+    await t.pumpAndSettle();
+    await flush(t);
+    expect(bridge.targetCalls, ['a|holiday.mp4|video/mp4']);
+    expect(bridge.calls, 0); // the system Sharesheet was not opened
+    expect(c.current.state, AppState.handoffAccepted);
+    expect(find.text('Handed off to Messenger'), findsOneWidget);
+    expect(find.textContaining('can’t see whether it was delivered'), findsOneWidget);
+    expect(file.existsSync(), isTrue); // still kept until Done / TTL
+  });
+
+  testWidgets('a target that vanished shows a message, keeps the file and reopens the picker with a fresh list', (t) async {
+    bridge.targetResult = TargetShareResult.targetUnavailable;
+    c.markPaired();
+    await pump(t, targets: _Targets());
+    await emit(t, received());
+    await t.tap(find.byKey(const Key('choose_app_button')));
+    await flush(t);
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const Key('target_b')));
+    await t.pumpAndSettle();
+    await flush(t);
+    await t.pumpAndSettle();
+    expect(c.current.state, AppState.choosingTarget);
+    expect(find.textContaining('WhatsApp isn’t available any more'), findsOneWidget);
+    expect(find.byKey(const Key('picker_title')), findsOneWidget);
+    expect(file.existsSync(), isTrue);
+  });
+
+  testWidgets('a platform error on a targeted send never claims handoff accepted', (t) async {
+    bridge.targetResult = TargetShareResult.platformError;
+    c.markPaired();
+    await pump(t, targets: _Targets());
+    await emit(t, received());
+    await t.tap(find.byKey(const Key('choose_app_button')));
+    await flush(t);
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const Key('target_a')));
+    await t.pumpAndSettle();
+    await flush(t);
+    expect(c.current.state, AppState.received);
+    expect(c.current.shareOpened, isFalse);
+    expect(find.textContaining('Couldn’t open Messenger'), findsOneWidget);
   });
 }
