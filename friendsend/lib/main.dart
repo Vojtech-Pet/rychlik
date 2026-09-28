@@ -7,6 +7,7 @@ import 'handoff/handoff_controller.dart';
 import 'identity/device_identity.dart';
 import 'platform/incoming_share.dart';
 import 'platform/lan_address.dart';
+import 'platform/media_bridge.dart';
 import 'platform/recent_targets.dart';
 import 'platform/share_bridge.dart';
 import 'platform/share_targets.dart';
@@ -87,6 +88,7 @@ Future<void> main() async {
     incomingShares: PlatformIncomingShares(),
     textSharer: shareBridge,
     recentTargets: FileRecentTargets(supportDir),
+    videoFetcher: PlatformVideoFetcher(),
   ));
 }
 
@@ -101,6 +103,7 @@ class FriendSendApp extends StatelessWidget {
     this.incomingShares = const NoIncomingShares(),
     this.textSharer,
     this.recentTargets = const NoRecentTargets(),
+    this.videoFetcher,
   });
 
   final DeviceIdentity identity;
@@ -111,6 +114,7 @@ class FriendSendApp extends StatelessWidget {
   final IncomingShareSource incomingShares;
   final TextSharer? textSharer;
   final RecentTargetsStore recentTargets;
+  final VideoFetcher? videoFetcher;
 
   @override
   Widget build(BuildContext context) {
@@ -119,7 +123,7 @@ class FriendSendApp extends StatelessWidget {
       theme: FsTheme.build(Brightness.light),
       darkTheme: FsTheme.build(Brightness.dark),
       themeMode: ThemeMode.system,
-      home: HomeScreen(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore, targetProvider: targetProvider, incomingShares: incomingShares, textSharer: textSharer, recentTargets: recentTargets),
+      home: HomeScreen(identity: identity, pairingManager: pairingManager, controller: controller, trustStore: trustStore, targetProvider: targetProvider, incomingShares: incomingShares, textSharer: textSharer, recentTargets: recentTargets, videoFetcher: videoFetcher),
     );
   }
 }

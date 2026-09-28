@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:friendsend/handoff/handoff_controller.dart';
 import 'package:friendsend/identity/device_identity.dart';
 import 'package:friendsend/platform/incoming_share.dart';
+import 'package:friendsend/platform/media_bridge.dart';
 import 'package:friendsend/platform/recent_targets.dart';
 import 'package:friendsend/platform/share_bridge.dart';
 import 'package:friendsend/platform/share_targets.dart';
@@ -49,10 +50,24 @@ class _Sharer implements TextSharer {
   ShareResult sheetResult = ShareResult.opened;
   final targetCalls = <(String, String)>[];
   final sheetCalls = <String>[];
+  final fileCalls = <(String, String, String)>[];
+  final fileSheetCalls = <String>[];
   @override
   Future<TargetShareResult> shareTextToTarget({required String text, required String targetId}) async {
     targetCalls.add((text, targetId));
     return targetResult;
+  }
+
+  @override
+  Future<TargetShareResult> shareFileToTarget({required String path, required String displayName, required String mimeType, required String targetId}) async {
+    fileCalls.add((path, displayName, targetId));
+    return targetResult;
+  }
+
+  @override
+  Future<ShareResult> shareFileViaSheet({required String path, required String displayName, required String mimeType}) async {
+    fileSheetCalls.add(path);
+    return sheetResult;
   }
 
   @override
@@ -61,6 +76,26 @@ class _Sharer implements TextSharer {
     return sheetResult;
   }
 }
+
+class _Fetcher implements VideoFetcher {
+  final _progress = StreamController<VideoProgress>.broadcast();
+  Completer<VideoOutcome>? pending;
+  final urls = <String>[];
+  int cancels = 0;
+  @override
+  Stream<VideoProgress> get progress => _progress.stream;
+  @override
+  Future<VideoOutcome> download(String url) {
+    urls.add(url);
+    return (pending = Completer<VideoOutcome>()).future;
+  }
+
+  @override
+  Future<void> cancel() async => cancels++;
+  void emit(int done, int total) => _progress.add(VideoProgress(done, total));
+}
+
+const _video = DownloadedVideo(path: '/cache/friendsend/video/abc.mp4', displayName: 'Funny clip.mp4', mimeType: 'video/mp4', size: 4300000);
 
 class _Recents implements RecentTargetsStore {
   _Recents(this.ids);
@@ -120,6 +155,40 @@ void main() {
       expect(await bridge.shareText(_facebook), ShareResult.platformError);
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
       expect(await bridge.shareText(_facebook), ShareResult.platformError); // no platform attached
+    });
+  });
+
+  group('PlatformVideoFetcher', () {
+    const channel = MethodChannel('test.media');
+    void reply(Object? Function(MethodCall) h) => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (c) async => h(c));
+    tearDown(() => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+
+    test('maps done / cancelled / error results and never throws', () async {
+      final fetcher = PlatformVideoFetcher(channel: channel);
+      reply((c) => {'path': '/p.mp4', 'displayName': 'A.mp4', 'mimeType': 'video/mp4', 'size': 12});
+      final done = await fetcher.download('https://x.com/a/status/1');
+      expect(done.kind, VideoOutcomeKind.done);
+      expect(done.video!.displayName, 'A.mp4');
+      reply((c) => {'cancelled': true});
+      expect((await fetcher.download('https://x.com/a')).kind, VideoOutcomeKind.cancelled);
+      reply((c) => {'error': 'No video in this post'});
+      final failed = await fetcher.download('https://x.com/a');
+      expect(failed.kind, VideoOutcomeKind.failed);
+      expect(failed.message, 'No video in this post');
+      reply((c) => throw PlatformException(code: 'x'));
+      expect((await fetcher.download('https://x.com/a')).kind, VideoOutcomeKind.failed);
+    });
+
+    test('progress events from the platform reach the stream', () async {
+      final fetcher = PlatformVideoFetcher(channel: channel);
+      final seen = <VideoProgress>[];
+      final sub = fetcher.progress.listen(seen.add);
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.handlePlatformMessage(
+        channel.name, channel.codec.encodeMethodCall(const MethodCall('videoProgress', {'done': 50, 'total': 200})), (_) {});
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(seen.single.fraction, 0.25);
+      expect(const VideoProgress(5, 0).fraction, isNull);
+      await sub.cancel();
     });
   });
 
@@ -187,7 +256,7 @@ void main() {
       if (root.existsSync()) root.deleteSync(recursive: true);
     });
 
-    Future<void> pump(WidgetTester t, _Source source, {RecentTargetsStore? recents}) async {
+    Future<void> pump(WidgetTester t, _Source source, {RecentTargetsStore? recents, VideoFetcher? fetcher}) async {
       t.view.physicalSize = const Size(780, 1688);
       t.view.devicePixelRatio = 2;
       addTearDown(t.view.reset);
@@ -195,7 +264,7 @@ void main() {
         theme: FsTheme.build(Brightness.dark),
         home: HomeScreen(
           identity: const DeviceIdentity(deviceId: 'd1', displayName: 'Phone'), pairingManager: pairing, controller: c,
-          targetProvider: targets, incomingShares: source, textSharer: sharer, recentTargets: recents ?? const NoRecentTargets(),
+          targetProvider: targets, incomingShares: source, textSharer: sharer, recentTargets: recents ?? const NoRecentTargets(), videoFetcher: fetcher,
         ),
       ));
       await t.pump();
@@ -276,6 +345,99 @@ void main() {
       await pump(t, _Source(text));
       expect(find.text('Share text'), findsOneWidget);
       expect(t.widget<Text>(find.byKey(const Key('incoming_text'))).data, text);
+    });
+
+    testWidgets('the video is fetched automatically only for links and only when a fetcher exists', (t) async {
+      await pump(t, _Source(_facebook));
+      expect(find.byKey(const Key('incoming_video_progress')), findsNothing); // no fetcher
+      await t.pumpWidget(const SizedBox());
+      final fetcher = _Fetcher();
+      await pump(t, _Source('just some words'), fetcher: fetcher);
+      expect(fetcher.urls, isEmpty); // not a link: nothing is downloaded
+      expect(find.byKey(const Key('incoming_video_progress')), findsNothing);
+    });
+
+    testWidgets('video path: download with progress, then the file (not the link) goes to the picked app', (t) async {
+      final fetcher = _Fetcher();
+      await pump(t, _Source(_facebook), fetcher: fetcher);
+      await t.pump();
+      expect(fetcher.urls, [_facebook]); // started by itself, no tap
+      expect(find.byKey(const Key('incoming_send_video')), findsNothing);
+      expect(find.byKey(const Key('incoming_video_progress')), findsOneWidget);
+      fetcher.emit(2150000, 4300000);
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await t.pump();
+      expect(t.widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator)).value, closeTo(0.5, 0.001));
+      fetcher.pending!.complete(const VideoOutcome.done(_video));
+      await t.pumpAndSettle();
+      expect(find.byKey(const Key('incoming_video_ready')), findsOneWidget);
+      expect(find.text('Send video to'), findsOneWidget);
+      expect(targets.requestedMime.last, 'video/mp4'); // the apps that take a video are listed for the file
+      await t.tap(find.byKey(const Key('target_com.fb.orca/.Send')));
+      await t.pumpAndSettle();
+      expect(sharer.fileCalls, [('/cache/friendsend/video/abc.mp4', 'Funny clip.mp4', 'com.fb.orca/.Send')]);
+      expect(sharer.targetCalls, isEmpty); // the link itself is not sent
+    });
+
+    testWidgets('More apps in the video state opens the Sharesheet with the file', (t) async {
+      final fetcher = _Fetcher();
+      await pump(t, _Source(_facebook), fetcher: fetcher);
+      await t.pump();
+      fetcher.pending!.complete(const VideoOutcome.done(_video));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('incoming_more_apps')));
+      await t.pumpAndSettle();
+      expect(sharer.fileSheetCalls, ['/cache/friendsend/video/abc.mp4']);
+      expect(sharer.sheetCalls, isEmpty);
+    });
+
+    testWidgets('cancel returns to the link, tells the platform, and a late result is ignored', (t) async {
+      final fetcher = _Fetcher();
+      await pump(t, _Source(_facebook), fetcher: fetcher);
+      await t.pump();
+      await t.tap(find.byKey(const Key('incoming_video_cancel')));
+      await t.pump();
+      expect(fetcher.cancels, 1);
+      expect(find.byKey(const Key('incoming_send_video')), findsOneWidget); // can still be retried by hand
+      fetcher.pending!.complete(const VideoOutcome.done(_video)); // arrives after the cancel
+      await t.pumpAndSettle();
+      expect(find.byKey(const Key('incoming_video_ready')), findsNothing);
+    });
+
+    testWidgets('a failed download shows a short reason and the link can still be sent', (t) async {
+      final fetcher = _Fetcher();
+      await pump(t, _Source(_facebook), fetcher: fetcher);
+      await t.pump();
+      fetcher.pending!.complete(const VideoOutcome.failed('This post has no video'));
+      await t.pumpAndSettle();
+      expect(find.text('This post has no video'), findsOneWidget);
+      await t.tap(find.byKey(const Key('target_com.fb.orca/.Send')));
+      await t.pumpAndSettle();
+      expect(sharer.targetCalls, [(_facebook, 'com.fb.orca/.Send')]);
+    });
+
+    testWidgets('Send the link instead, and Close during a download cancels it', (t) async {
+      final fetcher = _Fetcher();
+      await pump(t, _Source(_facebook), fetcher: fetcher);
+      await t.pump();
+      fetcher.pending!.complete(const VideoOutcome.done(_video));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('incoming_back_to_link')));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('target_com.fb.orca/.Send')));
+      await t.pumpAndSettle();
+      expect(sharer.targetCalls.length, 1);
+      expect(sharer.fileCalls, isEmpty);
+    });
+
+    testWidgets('closing the share screen while downloading cancels the download', (t) async {
+      final fetcher = _Fetcher();
+      await pump(t, _Source(_facebook), fetcher: fetcher);
+      await t.pump();
+      await t.tap(find.byKey(const Key('incoming_close')));
+      await t.pumpAndSettle();
+      expect(fetcher.cancels, 1);
+      expect(find.byKey(const Key('unpaired_message')), findsOneWidget);
     });
 
     testWidgets('without a share the normal pairing screen is unchanged', (t) async {

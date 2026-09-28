@@ -46,3 +46,18 @@ The S24 run (screenshots from the user) showed two real problems: too many windo
 - FriendSend publishes a long-lived sharing shortcut (`share-target` for `text/plain`) so the system Sharesheet can offer it in its top row too. Position and visibility there are decided by Android/One UI ranking; not guaranteed and not yet seen on the S24.
 - Emulator re-check (`artifacts/incoming_share/inline_share.png`): one tap on an app delivers the exact string (`SINK_TEXT ... length=54`); the shortcut exists in `dumpsys shortcut`. Tests: Flutter 119 passed, Kotlin 18 passed.
 - Not verified: the new APK on the S24 (whether Messenger/WhatsApp now appear first, and whether FriendSend moves up in Facebook's Sharesheet).
+
+
+## v1.2 — the video itself, fetched automatically in the background
+
+Problem (S24 run): sharing an x.com link to Facebook sends a *link*, so the recipient lands on x.com. The user wants the content to stay on the receiving network. Now, when the shared text is a link, FriendSend starts fetching the video **by itself** in the background (no extra tap):
+
+- Share -> FriendSend -> "Getting the video…" (progress, "Send the link instead") -> "Send video to" with the apps that accept a video (`video/*` target query) -> one tap.
+- The video is downloaded **inside the app** with yt-dlp running through Chaquopy (Python 3.13, arm64-v8a + x86_64; release APK 70 -> 109 MB). Single-file formats only (`best[ext=mp4]/best`; the phone has no ffmpeg); media filter and safe file naming as on the desktop. Files live in `cacheDir/friendsend/video/` (the only root the share code hands out) and are purged after 1 hour.
+- Handed to the chosen app as a `content://` URI with the real name as `DISPLAY_NAME` (same targeted `ACTION_SEND` as received files) or via the Android Sharesheet ("More apps…").
+- A link without a video ("No video found in this link. You can still send the link.") or any failure keeps the link path fully usable; "Try the video again" retries. Cancel / Close / a newer share cancels the running download; a late result of a cancelled run is ignored.
+- Build note: Chaquopy needs a host Python at build time: set `chaquopy.buildPython=<path to python 3.10-3.13>` in `~/.gradle/gradle.properties` (this machine: uv's Python 3.13). R8 keep rule for the Python-callable `VideoDownloader$Control` is in `android/app/proguard-rules.pro` (without it the release build renamed the methods and the download failed with `AttributeError`).
+
+Evidence: Flutter 128 passed (22 in `incoming_share_test.dart`, incl. auto-start, cancel/late-result, failure, file-vs-link routing and channel mapping); Kotlin 18 passed; emulator with the real release APK and a local HTTP server: the link `http://10.0.2.2:8790/clip.mp4` -> "Getting the video…" -> "clip.mp4 · 42 KB" -> the test sink reads it over `content://` with `display_name=clip.mp4`, `size=43149` and a SHA-256 identical to the served file; a non-video page shows the friendly message and the link apps (`artifacts/incoming_share/video_ready.png`, `video_not_found.png`).
+
+Not verified: **real x.com / Facebook links on the S24** (public tweets should work through yt-dlp, but X changes often and some posts need a login; yt-dlp can only be updated by shipping a new APK), battery/time for large videos, videos that need ffmpeg merging (they fail with a message instead of being sent).

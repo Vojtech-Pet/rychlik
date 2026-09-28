@@ -18,6 +18,11 @@ abstract class TextSharer {
   Future<TargetShareResult> shareTextToTarget({required String text, required String targetId});
 
   Future<ShareResult> shareText(String text);
+
+  /// A downloaded video handed to a chosen app / the Android Sharesheet (same private-cache guard as received files).
+  Future<TargetShareResult> shareFileToTarget({required String path, required String displayName, required String mimeType, required String targetId});
+
+  Future<ShareResult> shareFileViaSheet({required String path, required String displayName, required String mimeType});
 }
 
 class ShareBridge implements TextSharer {
@@ -95,6 +100,14 @@ class ShareBridge implements TextSharer {
   }
 
   /// The Android Sharesheet for the text (FriendSend itself excluded natively).
+  @override
+  Future<TargetShareResult> shareFileToTarget({required String path, required String displayName, required String mimeType, required String targetId}) =>
+      shareToTarget(path: path, displayName: displayName, mimeType: mimeType, targetId: targetId);
+
+  @override
+  Future<ShareResult> shareFileViaSheet({required String path, required String displayName, required String mimeType}) =>
+      shareFile(path: path, displayName: displayName, mimeType: mimeType);
+
   @override
   Future<ShareResult> shareText(String text) async {
     try {

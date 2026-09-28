@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../handoff/handoff_controller.dart';
 import '../identity/device_identity.dart';
 import '../platform/incoming_share.dart';
+import '../platform/media_bridge.dart';
 import '../platform/recent_targets.dart';
 import '../platform/share_bridge.dart';
 import '../platform/share_targets.dart';
@@ -32,6 +33,7 @@ class HomeScreen extends StatefulWidget {
     this.incomingShares = const NoIncomingShares(),
     this.textSharer,
     this.recentTargets = const NoRecentTargets(),
+    this.videoFetcher,
   });
 
   static Widget _defaultScanner(BuildContext context) => const QrScanScreen();
@@ -43,6 +45,9 @@ class HomeScreen extends StatefulWidget {
   final IncomingShareSource incomingShares;
   final TextSharer? textSharer;
   final RecentTargetsStore recentTargets;
+
+  /// When present, a shared link can also be sent as the downloaded video itself.
+  final VideoFetcher? videoFetcher;
 
   final DeviceIdentity identity;
   final SecurePairingManager pairingManager;
@@ -61,12 +66,21 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _incomingText;
   StreamSubscription<String>? _incomingSub;
   Future<List<ShareTarget>> _incomingTargets = Future.value(const <ShareTarget>[]);
+  IncomingVideoPhase _videoPhase = IncomingVideoPhase.idle;
+  VideoProgress? _videoProgress;
+  DownloadedVideo? _video;
+  String? _videoError;
+  StreamSubscription<VideoProgress>? _videoSub;
+  int _videoRun = 0; // identifies the current download so a late result of a cancelled/replaced one is ignored
 
   @override
   void initState() {
     super.initState();
     widget.incomingShares.takeInitial().then((text) {
       if (text != null && mounted) _showIncoming(text);
+    });
+    _videoSub = widget.videoFetcher?.progress.listen((p) {
+      if (mounted && _videoPhase == IncomingVideoPhase.downloading) setState(() => _videoProgress = p);
     });
     _incomingSub = widget.incomingShares.updates.listen((text) {
       if (mounted) _showIncoming(text);
@@ -80,6 +94,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _sub?.cancel();
     _incomingSub?.cancel();
+    _videoSub?.cancel();
     super.dispose();
   }
 
@@ -169,15 +184,69 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Apps that can take the shared text, most recently used first (platform order otherwise).
-  Future<List<ShareTarget>> _loadTextTargets() async {
-    final found = await widget.targetProvider.targetsFor('text/plain');
+  Future<List<ShareTarget>> _loadTextTargets([String mimeType = 'text/plain']) async {
+    final found = await widget.targetProvider.targetsFor(mimeType);
     return orderByRecents(found, await widget.recentTargets.load(), (t) => t.id);
   }
 
   void _showIncoming(String text) {
+    if (_videoPhase == IncomingVideoPhase.downloading) widget.videoFetcher?.cancel();
+    _videoRun++;
     setState(() {
       _incomingText = text; // the newest share replaces an older unfinished one
       _incomingTargets = _loadTextTargets();
+      _videoPhase = IncomingVideoPhase.idle;
+      _video = null;
+      _videoProgress = null;
+      _videoError = null;
+    });
+    // A shared link starts fetching its video in the background right away; no extra tap.
+    if (widget.videoFetcher != null && IncomingShareScreen.looksLikeLink(text)) _sendVideo();
+  }
+
+  Future<void> _sendVideo() async {
+    final url = _incomingText?.trim();
+    final fetcher = widget.videoFetcher;
+    if (url == null || fetcher == null || _videoPhase == IncomingVideoPhase.downloading) return;
+    final run = ++_videoRun;
+    setState(() {
+      _videoPhase = IncomingVideoPhase.downloading;
+      _videoProgress = null;
+      _videoError = null;
+    });
+    final outcome = await fetcher.download(url);
+    if (!mounted || run != _videoRun) return; // cancelled, closed or replaced by a newer share
+    setState(() {
+      switch (outcome.kind) {
+        case VideoOutcomeKind.done:
+          _video = outcome.video;
+          _videoPhase = IncomingVideoPhase.ready;
+          _incomingTargets = _loadTextTargets(outcome.video!.mimeType); // apps that take a video, not just text
+        case VideoOutcomeKind.cancelled:
+          _videoPhase = IncomingVideoPhase.idle;
+        case VideoOutcomeKind.failed:
+          _videoPhase = IncomingVideoPhase.failed;
+          _videoError = outcome.message ?? 'The video could not be downloaded.';
+      }
+    });
+  }
+
+  void _cancelVideo() {
+    _videoRun++;
+    widget.videoFetcher?.cancel();
+    setState(() {
+      _videoPhase = IncomingVideoPhase.idle;
+      _videoProgress = null;
+    });
+  }
+
+  void _closeIncoming() {
+    if (_videoPhase == IncomingVideoPhase.downloading) widget.videoFetcher?.cancel();
+    _videoRun++;
+    setState(() {
+      _incomingText = null;
+      _videoPhase = IncomingVideoPhase.idle;
+      _video = null;
     });
   }
 
@@ -185,7 +254,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final text = _incomingText;
     final sharer = widget.textSharer;
     if (text == null || sharer == null) return;
-    final outcome = await sharer.shareTextToTarget(text: text, targetId: target.id);
+    final video = _videoPhase == IncomingVideoPhase.ready ? _video : null;
+    final outcome = video != null
+        ? await sharer.shareFileToTarget(path: video.path, displayName: video.displayName, mimeType: video.mimeType, targetId: target.id)
+        : await sharer.shareTextToTarget(text: text, targetId: target.id);
     if (!mounted) return;
     if (outcome == TargetShareResult.opened) {
       await widget.recentTargets.record(target.id);
@@ -207,7 +279,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final text = _incomingText;
     final sharer = widget.textSharer;
     if (text == null || sharer == null) return;
-    final outcome = await sharer.shareText(text);
+    final video = _videoPhase == IncomingVideoPhase.ready ? _video : null;
+    final outcome = video != null
+        ? await sharer.shareFileViaSheet(path: video.path, displayName: video.displayName, mimeType: video.mimeType)
+        : await sharer.shareText(text);
     if (!mounted) return;
     if (outcome == ShareResult.opened) {
       setState(() => _incomingText = null);
@@ -296,7 +371,21 @@ class _HomeScreenState extends State<HomeScreen> {
         targets: _incomingTargets,
         onPick: _pickTextTarget,
         onMoreApps: _textSystemSheet,
-        onClose: () => setState(() => _incomingText = null),
+        onClose: _closeIncoming,
+        video: IncomingVideoUi(
+          available: widget.videoFetcher != null && IncomingShareScreen.looksLikeLink(incoming),
+          phase: _videoPhase,
+          progress: _videoProgress,
+          video: _video,
+          error: _videoError,
+        ),
+        onSendVideo: _sendVideo,
+        onCancelVideo: _cancelVideo,
+        onBackToLink: () => setState(() {
+          _videoPhase = IncomingVideoPhase.idle;
+          _video = null;
+          _incomingTargets = _loadTextTargets();
+        }),
       );
     }
     return StreamBuilder<HandoffUiSnapshot>(

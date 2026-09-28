@@ -28,6 +28,8 @@ class MainActivity : FlutterActivity() {
     private val shareChannelName = "app.friendsend/share"
     private val mdnsChannelName = "app.friendsend/mdns"
     private val incomingChannelName = "app.friendsend/incoming"
+    private val mediaChannelName = "app.friendsend/media"
+    private val videoDownloader by lazy { VideoDownloader(this) }
 
     // Prompt A14 §54: must match the authority declared in AndroidManifest.xml
     // and the <cache-path> declared in res/xml/file_paths.xml.
@@ -120,6 +122,37 @@ class MainActivity : FlutterActivity() {
                     }
                     else -> result.notImplemented()
                 }
+            }
+        }
+        val mediaChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, mediaChannelName)
+        mediaChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "downloadVideo" -> {
+                    val url = call.argument<String>("url").orEmpty()
+                    if (!(url.startsWith("http://") || url.startsWith("https://"))) {
+                        result.success(mapOf("error" to "The address is not a web link"))
+                    } else {
+                        Thread {
+                            val outcome: Map<String, Any?> = try {
+                                val d = videoDownloader.download(url) { done, total ->
+                                    runOnUiThread { mediaChannel.invokeMethod("videoProgress", mapOf("done" to done, "total" to total)) }
+                                }
+                                mapOf("path" to d.path, "displayName" to d.displayName, "mimeType" to d.mimeType, "size" to d.size)
+                            } catch (f: VideoDownloader.Failure) {
+                                if (f.cancelled) mapOf("cancelled" to true) else mapOf("error" to (f.message ?: "The video could not be downloaded"))
+                            } catch (e: Exception) {
+                                android.util.Log.w("FriendSendVideo", "unexpected: " + e)
+                                mapOf("error" to "The video could not be downloaded")
+                            }
+                            runOnUiThread { result.success(outcome) }
+                        }.start()
+                    }
+                }
+                "cancelVideoDownload" -> {
+                    videoDownloader.cancel()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
             }
         }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, mdnsChannelName).setMethodCallHandler { call, result ->
