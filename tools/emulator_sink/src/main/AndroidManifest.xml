@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="Sink ${sinkMime}" android:allowBackup="false">
+        <activity android:name="test.sink.SinkActivity" android:exported="true" android:label="ZZ Test Sink (${sinkMime})">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="${sinkMime}"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
