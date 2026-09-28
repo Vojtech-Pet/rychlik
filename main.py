@@ -26,7 +26,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Rýchlik")
     app.setOrganizationName("Rychlik")
-    app.setDesktopFileName("rychlik")
+    app.setDesktopFileName("rychlik-app")
     app.setWindowIcon(QIcon(str(Path(__file__).parent / "src" / "rychlik" / "resources" / "rychlik.svg")))
     themes = ThemeManager(app, QSettings("Rychlik", "Rychlik"))
 
