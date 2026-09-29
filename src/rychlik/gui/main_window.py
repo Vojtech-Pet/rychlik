@@ -139,9 +139,11 @@ class MainWindow(QMainWindow):
         tb.setContentsMargins(10, 0, 10, 0)
         tb.setSpacing(4)
         self.add_button = self._toolbar_button("Add", "plus", primary=True)
+        self.send_video_button = self._toolbar_button("Send video", "send")
         self.queues_button = self._toolbar_button("Queues", "list")
         self.settings_button = self._toolbar_button("Settings", "gear")
         tb.addWidget(self.add_button)
+        tb.addWidget(self.send_video_button)
         tb.addSpacing(12)
         tb.addWidget(self.queues_button)
         tb.addWidget(self.settings_button)
@@ -226,7 +228,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_static_icons(self) -> None:
         p = palette(self._theme)
-        for button in (self.add_button, self.queues_button, self.settings_button):
+        for button in (self.add_button, self.send_video_button, self.queues_button, self.settings_button):
             color = p.on_accent if button.property("variant") == "primary" else p.icon
             button.setIcon(icons.icon(button.property("glyph"), metrics().icon_toolbar, color, disabled_color=p.text_disabled))
         self.status_dot.setPixmap(icons.pixmap("dot", 10, p.info))
@@ -235,6 +237,7 @@ class MainWindow(QMainWindow):
         bar = self.menuBar()
         file_menu = bar.addMenu("&File")
         self.action_add = self._action("Add download…", self._widget.open_add_dialog, QKeySequence.StandardKey.New, file_menu)
+        self.action_send_video = self._action("Send video…", self.open_send_video, None, file_menu)
         self.action_open_dest = self._action("Open download folder", self._open_destination, None, file_menu)
         file_menu.addSeparator()
         self.action_quit = self._action("Quit", self.close, QKeySequence.StandardKey.Quit, file_menu)
@@ -273,6 +276,7 @@ class MainWindow(QMainWindow):
 
     def _wire(self) -> None:
         self.add_button.clicked.connect(self._widget.open_add_dialog)
+        self.send_video_button.clicked.connect(self.open_send_video)
         self.queues_button.clicked.connect(lambda: self._select_sidebar("tool:queues"))
         self.settings_button.clicked.connect(self.open_settings)
         self._widget.summary_changed.connect(self._on_summary)
@@ -343,6 +347,11 @@ class MainWindow(QMainWindow):
             item.set_active(k == self._active_key, theme)
         if self._devices_page is not None and hasattr(self._devices_page, "set_theme"):
             self._devices_page.set_theme(theme)
+
+    def open_send_video(self) -> None:
+        from rychlik.gui.dialogs.send_video import SendVideoDialog
+
+        SendVideoDialog(self, theme=self._theme).exec()
 
     def open_settings(self) -> None:
         from rychlik.gui.dialogs import SettingsDialog
