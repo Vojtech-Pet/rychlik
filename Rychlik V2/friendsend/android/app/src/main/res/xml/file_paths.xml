@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Prompt A14 §54: exposes ONLY the FriendSend temporary-payload subtree
+    of the app's private cache directory (matches
+    getTemporaryDirectory()/friendsend used by TempCache in main.dart).
+    Nothing else on the filesystem, not the whole cache dir, not
+    external/shared storage, is reachable through this FileProvider.
+-->
+<paths>
+    <cache-path name="friendsend_incoming" path="friendsend/" />
+</paths>

@@ -1,0 +1,7 @@
+{
+  "protocol_version": 1,
+  "capabilities": ["RECEIVE_STREAM", "TEMPORARY_FILE_HANDOFF", "SHARE_TO_OS"],
+  "platform": "android",
+  "device_id": "9c1e2f3a4b5c6d7e8f901a2b3c4d5e6f",
+  "display_name": "FriendSend Android"
+}

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Rýchlik
+Comment=Rýchlik Desktop (functional skeleton)
+Exec=/mnt/Data/Rychlik-app/launch.sh
+Icon=/mnt/Data/Rychlik-app/src/rychlik/resources/rychlik.svg
+StartupWMClass=rychlik-app
+Terminal=false
+Categories=Network;FileTransfer;

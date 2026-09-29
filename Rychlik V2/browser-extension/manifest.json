@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Rýchlik",
+  "version": "2.0.1",
+  "description": "Odošle odkazy do aplikácie Rýchlik pre Linux.",
+  "icons": {
+    "48": "icon.svg",
+    "96": "icon.svg"
+  },
+  "permissions": ["activeTab", "contextMenus", "notifications", "storage", "tabs", "webRequest"],
+  "host_permissions": ["<all_urls>", "http://127.0.0.1:17655/*", "http://localhost:17655/*"],
+  "content_scripts": [{
+    "matches": ["http://*/*", "https://*/*"],
+    "js": ["content.js"],
+    "css": ["content.css"],
+    "all_frames": true,
+    "run_at": "document_start"
+  }],
+  "background": {
+    "scripts": ["bridge-client.js", "background.js"]
+  },
+  "action": {
+    "default_title": "Rýchlik",
+    "default_icon": "icon.svg",
+    "default_popup": "popup.html"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "rychlik-0d73d684@rychlik.app",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  }
+}

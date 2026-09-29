@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="sk">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="title-row">
+    <img src="icon.svg" width="22" height="22" alt="">
+    <div class="title">Rýchlik — Nastavenia</div>
+  </div>
+  <label class="toggle-row">
+    <input type="checkbox" id="button-toggle">
+    <span>Zobrazovať plávajúce tlačidlo na stránkach</span>
+  </label>
+  <label class="toggle-row">
+    <input type="checkbox" id="reshow-shortcut-toggle">
+    <span>Klávesová skratka na vypnutie a zapnutie tlačidla</span>
+  </label>
+  <div class="shortcut-row">
+    <span id="reshow-shortcut-display" class="shortcut-display">Shift+R</span>
+    <button id="reshow-shortcut-record" type="button">Zmeniť</button>
+    <button id="reshow-shortcut-reset" type="button" class="reset">Predvolené</button>
+  </div>
+  <div class="title-row"><div class="title">Spojenie s aplikáciou</div></div>
+  <div class="shortcut-row">
+    <input id="token-input" type="password" placeholder="Token z Rýchlika" autocomplete="off" spellcheck="false">
+    <button id="token-save" type="button">Uložiť</button>
+  </div>
+  <div id="token-status" class="shortcut-display"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

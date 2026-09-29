@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Direct Share: lets the system Sharesheet list FriendSend in its top row, not only among all apps. -->
+    <share-target android:targetClass="app.friendsend.friendsend.MainActivity">
+        <data android:mimeType="text/plain" />
+        <category android:name="app.friendsend.category.TEXT_SHARE" />
+    </share-target>
+</shortcuts>

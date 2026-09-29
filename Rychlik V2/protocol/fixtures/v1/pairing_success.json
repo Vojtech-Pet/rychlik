@@ -1,0 +1,13 @@
+{
+  "device_id": "9c1e2f3a4b5c6d7e8f901a2b3c4d5e6f",
+  "display_name": "FriendSend Android",
+  "platform": "android",
+  "endpoint": {
+    "host": "192.168.1.77",
+    "port": 47812
+  },
+  "protocol_version": 1,
+  "capabilities": ["RECEIVE_STREAM", "TEMPORARY_FILE_HANDOFF", "SHARE_TO_OS"],
+  "auth_token": "b2c3d4e5f60718293a4b5c6d7e8f9012",
+  "paired_at_utc": "2026-01-01T00:00:00+00:00"
+}

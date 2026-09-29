@@ -1,0 +1,137 @@
+:root {
+  --bg: #121217;
+  --surface: #18181f;
+  --surface2: #1f1f28;
+  --border: #353744;
+  --border-strong: #4b4e60;
+  --text: #e8e9ef;
+  --text2: #a3a6b4;
+  --accent: #6c5df6;
+  --accent-hover: #6152ec;
+  --accent-text: #b4adff;
+  --accent-tint: rgba(108, 93, 246, .2);
+  --focus: #8b80ff;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface2: #f8f8fb;
+    --border: #d6d8e0;
+    --border-strong: #b7bac6;
+    --text: #282a32;
+    --text2: #5f6270;
+    --accent: #6050e2;
+    --accent-hover: #5142d0;
+    --accent-text: #4c3fcb;
+    --accent-tint: rgba(96, 80, 226, .14);
+    --focus: #6050e2;
+  }
+}
+
+body {
+  width: 300px;
+  margin: 0;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.title-row + .toggle-row,
+.title-row + .shortcut-row { margin-top: 0; }
+.title-row:not(:first-child) { margin-top: 16px; }
+
+.title {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface2);
+  color: var(--text);
+  padding: 7px 14px;
+  font: 600 12.5px system-ui, sans-serif;
+  cursor: pointer;
+}
+button:hover {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+#token-save {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+#token-save:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.toggle-row input { accent-color: var(--accent); cursor: pointer; }
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.shortcut-display {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 7px 10px;
+  color: var(--text2);
+  font: 600 12.5px system-ui, sans-serif;
+  text-align: center;
+}
+.shortcut-display.recording {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--accent-tint);
+}
+
+#token-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 10px;
+  font: 12.5px system-ui, sans-serif;
+}
+#token-input::placeholder { color: var(--text2); }
+
+#token-status {
+  margin-bottom: 4px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0 2px;
+  font-weight: 500;
+}
+
+.shortcut-row button.reset { color: var(--text2); }
